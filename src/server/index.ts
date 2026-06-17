@@ -204,48 +204,82 @@ try {
     console.log(`[diag] describe routerd: ERROR — ${(err as Error).message}`);
   }
 
-  // 2) Probar otros servicios
-  const tryMethods: Array<{ service: string; method: string; payload?: Record<string, unknown> }> = [
-    { service: "routerd", method: "info" },
-    { service: "routerd", method: "wifi" },
-    { service: "routerd", method: "wificfg" },
-    { service: "routerd", method: "get_wifi" },
-    { service: "routerd", method: "get_wificfg" },
-    { service: "routerd", method: "wifi_status" },
-    { service: "routerd", method: "wifi_info" },
-    { service: "routerd", method: "wlan" },
-    { service: "routerd", method: "guest" },
-    { service: "routerd", method: "guest_wifi" },
-    { service: "routerd", method: "get_guest" },
-    { service: "routerd", method: "status" },
-    { service: "routerd", method: "wificfg_2g" },
-    { service: "routerd", method: "wificfg_5g" },
-    { service: "wifi", method: "info" },
-    { service: "wifi", method: "status" },
-    { service: "wifi", method: "wificfg" },
-    { service: "wifi", method: "get_wificfg" },
-    { service: "wifi", method: "get_apply_status" },
-    { service: "network.wireless", method: "status" },
-    { service: "network.wireless", method: "info" },
-    { service: "network", method: "wificfg" },
-    { service: "network", method: "wifi" },
-    { service: "rkey.uci", method: "list" },
-    { service: "rkey.uci", method: "get" },
-    { service: "rkey.routerd", method: "info" },
-    { service: "rkey.routerd", method: "wificfg" },
-    { service: "rkey.routerd", method: "wifi" },
-    { service: "hotspot", method: "info" },
-    { service: "hotspot", method: "status" },
+  // 1b) Listar métodos de wifi (porque get_apply_status funciona)
+  try {
+    const wifiMethods = await routerService.describeService("wifi");
+    console.log(`[diag] wifi métodos: ${Object.keys(wifiMethods).join(", ")}`);
+  } catch (err) {
+    console.log(`[diag] describe wifi: ERROR — ${(err as Error).message}`);
+  }
+
+  // 1c) Listar métodos de rkey.uci (porque get devuelve [2] y list [3])
+  try {
+    const rkeyUciMethods = await routerService.describeService("rkey.uci");
+    console.log(`[diag] rkey.uci métodos: ${Object.keys(rkeyUciMethods).join(", ")}`);
+  } catch (err) {
+    console.log(`[diag] describe rkey.uci: ERROR — ${(err as Error).message}`);
+  }
+
+  // 1d) Listar métodos de hotspot
+  try {
+    const hotspotMethods = await routerService.describeService("hotspot");
+    console.log(`[diag] hotspot métodos: ${Object.keys(hotspotMethods).join(", ")}`);
+  } catch (err) {
+    console.log(`[diag] describe hotspot: ERROR — ${(err as Error).message}`);
+  }
+
+  // 1e) Listar métodos de otros servicios candidatos
+  for (const svc of ["network", "network.wireless", "luci", "luci-rpc", "service", "system", "rc", "platform_hal", "iwinfo", "rkey", "rkey.session"]) {
+    try {
+      const methods = await routerService.describeService(svc);
+      console.log(`[diag] ${svc} métodos: ${Object.keys(methods).join(", ")}`);
+    } catch (err) {
+      console.log(`[diag] describe ${svc}: ${(err as Error).message.slice(0, 80)}`);
+    }
+  }
+
+  // 2) Probar rkey.uci.get con argumentos válidos (config + section)
+  const rkeyUciTests = [
+    { service: "rkey.uci", method: "get", payload: { config: "wificfg", section: "2G" } },
+    { service: "rkey.uci", method: "get", payload: { config: "wificfg", section: "5G" } },
+    { service: "rkey.uci", method: "get", payload: { config: "wificfg" } },
+    { service: "rkey.uci", method: "set", payload: { config: "wificfg", section: "2G", values: { Enable2: "0" } } },
+    { service: "rkey.uci", method: "apply", payload: { timeout: 60 } },
+    { service: "rkey.uci", method: "get_all", payload: { config: "wificfg" } },
+    { service: "rkey.uci", method: "configs", payload: {} },
   ];
 
-  for (const { service, method, payload } of tryMethods) {
+  console.log("[diag] probando rkey.uci con argumentos…");
+  for (const { service, method, payload } of rkeyUciTests) {
     try {
       const res = await routerService.callService(service, method, payload);
-      const snippet = JSON.stringify(res).slice(0, 300);
-      console.log(`[diag] ${service}.${method}: ${snippet}`);
+      const snippet = JSON.stringify(res).slice(0, 400);
+      console.log(`[diag]   ${service}.${method}(${JSON.stringify(payload)}): ${snippet}`);
     } catch (err) {
       const msg = (err as Error).message.slice(0, 100);
-      console.log(`[diag] ${service}.${method}: ERROR — ${msg}`);
+      console.log(`[diag]   ${service}.${method}(${JSON.stringify(payload)}): ERROR — ${msg}`);
+    }
+  }
+
+  // 3) Probar más métodos en wifi (ya que get_apply_status funciona)
+  const wifiTests = [
+    "config", "configs", "wificfg", "wificfg_2g", "wificfg_5g", "wlan0", "wlan1",
+    "guest", "guest_2g", "guest_5g", "2g", "5g", "set", "get", "update",
+    "enable_2g", "enable_5g", "disable_2g", "disable_5g", "set_2g", "set_5g",
+    "get_2g", "get_5g", "apply", "ssid", "scan",
+  ];
+
+  console.log("[diag] probando métodos de wifi…");
+  for (const method of wifiTests) {
+    try {
+      const res = await routerService.callService("wifi", method, {});
+      const snippet = JSON.stringify(res).slice(0, 200);
+      console.log(`[diag]   wifi.${method}: ${snippet}`);
+    } catch (err) {
+      const code = (err as Error).message.match(/"code":(-?\d+)/)?.[1] ?? "?";
+      if (code !== "3") {
+        console.log(`[diag]   wifi.${method}: code=${code} — ${(err as Error).message.slice(0, 80)}`);
+      }
     }
   }
 } catch (err) {
