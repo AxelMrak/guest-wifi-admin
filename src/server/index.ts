@@ -331,6 +331,74 @@ try {
   } catch (err) {
     console.log(`[diag]   rkey.uci.set con apply=true: ${(err as Error).message.slice(0, 150)}`);
   }
+
+  // 6) Test de toggle end-to-end (deshabilitar guest 2G+5G y verificar persistencia)
+  console.log("[diag] ============================================================");
+  console.log("[diag] TEST END-TO-END: deshabilitar guest WiFi 2G+5G");
+  console.log("[diag] ============================================================");
+
+  const before: Record<string, string | undefined> = {};
+  for (const section of ["2G", "5G"]) {
+    try {
+      const res = (await routerService.callService("uci", "get", {
+        config: "wificfg",
+        section,
+      })) as { result?: [number, { values?: Record<string, string> }] };
+      before[section] = res.result?.[1]?.values?.Enable2;
+      console.log(`[diag]   ANTES  wificfg/${section}.Enable2 = ${before[section]}`);
+    } catch (err) {
+      console.log(`[diag]   ANTES  wificfg/${section}: ERROR — ${(err as Error).message.slice(0, 120)}`);
+    }
+  }
+
+  // Aplicar: deshabilitar ambos
+  for (const section of ["2G", "5G"]) {
+    try {
+      const res = await routerService.callService("rkey.uci", "set", {
+        config: "wificfg",
+        section,
+        values: { Enable2: "0" },
+        apply: true,
+      });
+      console.log(`[diag]   SET    rkey.uci.set wificfg/${section} Enable2=0 apply=true: ${JSON.stringify(res).slice(0, 100)}`);
+    } catch (err) {
+      console.log(`[diag]   SET    rkey.uci.set wificfg/${section}: ERROR — ${(err as Error).message.slice(0, 120)}`);
+    }
+  }
+
+  // Poll wifi.get_apply_status
+  for (let i = 0; i < 8; i++) {
+    try {
+      const res = (await routerService.callService("wifi", "get_apply_status", {})) as {
+        result?: [number, { status?: string; applied?: number; pending?: number }];
+      };
+      console.log(`[diag]   POLL   wifi.get_apply_status (${i + 1}/8): ${JSON.stringify(res.result?.[1]).slice(0, 150)}`);
+      if (res.result?.[0] === 0 && (res.result[1]?.pending === 0 || res.result[1]?.status === "success")) break;
+    } catch (err) {
+      console.log(`[diag]   POLL   wifi.get_apply_status (${i + 1}/8): ERROR — ${(err as Error).message.slice(0, 80)}`);
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  // Verificar persistencia
+  const after: Record<string, string | undefined> = {};
+  for (const section of ["2G", "5G"]) {
+    try {
+      const res = (await routerService.callService("uci", "get", {
+        config: "wificfg",
+        section,
+      })) as { result?: [number, { values?: Record<string, string> }] };
+      after[section] = res.result?.[1]?.values?.Enable2;
+      const changed = before[section] !== after[section] ? "✓ CAMBIÓ" : "✗ NO CAMBIÓ";
+      console.log(`[diag]   DESPUÉS wificfg/${section}.Enable2 = ${after[section]} (${changed})`);
+    } catch (err) {
+      console.log(`[diag]   DESPUÉS wificfg/${section}: ERROR — ${(err as Error).message.slice(0, 120)}`);
+    }
+  }
+
+  console.log("[diag] >>> AHORA CHEQUEÁ TU LISTA DE WI-FI: 'Vertiente Clientes' y 'Vertiente Clientes-5G' deberían haber DESAPARECIDO.");
+  console.log("[diag] >>> Si siguen visibles, el set persistió pero el radio no se re Cargó — el router necesita un reload explícito.");
+  console.log("[diag] ============================================================");
 } catch (err) {
   console.log(`[diag] falló descubrimiento UBUS: ${(err as Error).message}`);
 }
