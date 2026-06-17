@@ -9,18 +9,6 @@ export interface UciWificfgValues {
   [key: string]: string | undefined;
 }
 
-/** Respuesta cruda de un `uci get` */
-export interface UciGetResult {
-  result: [number, UciWificfgValues];
-}
-
-/** Respuesta cruda del login UBUS */
-export interface UbusLoginResult {
-  jsonrpc: string;
-  id: number;
-  result: [number, { ubus_rpc_session: string }];
-}
-
 /** Estado interno del RouterService */
 export interface RouterSession {
   token: string;

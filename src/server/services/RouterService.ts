@@ -14,7 +14,7 @@
  * se cambia de router, este es el único archivo a tocar.
  */
 
-import type { RouterSession, UciGetResult, WifiBand } from "../types";
+import type { RouterSession, UciWificfgValues, WifiBand } from "../types";
 
 const UBUS_NULL_SESSION = "00000000000000000000000000000000";
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -22,8 +22,6 @@ const REQUEST_TIMEOUT_MS = 8_000;
 interface UbusCallParams {
   method: string;
   payload: Record<string, unknown>;
-  // Si se setea, se invoca `uci <extra[0]>` en vez de `uci <method>` (ej: "apply").
-  extra?: string[];
 }
 
 export class RouterService {
@@ -64,7 +62,6 @@ export class RouterService {
     return this.loginInFlight;
   }
 
-  /** Invalida la sesión actual. Útil cuando el router reporta sesión inválida. */
   invalidateSession(): void {
     this.session = null;
   }
@@ -93,7 +90,7 @@ export class RouterService {
 
     if (!res || res.result?.[0] !== 0) {
       throw new Error(
-        `Login UBUS falló: ${JSON.stringify(res?.result ?? "sin respuesta")}`,
+        `Login UBUS falló: ${JSON.stringify(res?.result ?? res?.error ?? "sin respuesta")}`,
       );
     }
 
@@ -110,18 +107,20 @@ export class RouterService {
   // API pública
   // ---------------------------------------------------------------------------
 
-  /** Devuelve la config cruda de una banda (incluye `Enable2`). */
-  async getBandConfig(band: WifiBand): Promise<UciGetResult> {
-    return this.callWithRetry({
-      method: "uci",
+  /** Devuelve los valores de config de una banda. Lanza si la respuesta es inválida. */
+  async getBandConfig(band: WifiBand): Promise<UciWificfgValues> {
+    const response = await this.callWithRetry({
+      method: "get",
       payload: { config: "wificfg", section: band },
-    }) as Promise<UciGetResult>;
+    });
+    return this.parseUciValues(response, band);
   }
 
   /**
    * Estado actual de la red de invitados.
    * Una banda se considera activa si `Enable2 === "1"`.
-   * Si alguna banda difiere o no responde, retorna `false` (estado seguro).
+   * Si alguna banda falla al leer, esa banda se considera `undefined` y el
+   * estado global cae a `false` (estado seguro: "no sabemos, asumimos apagado").
    */
   async getGuestStatus(): Promise<{ active: boolean; values: Record<WifiBand, string | undefined> }> {
     const [band2G, band5G] = await Promise.all([
@@ -129,10 +128,10 @@ export class RouterService {
       this.getBandConfig("5G").catch(() => null),
     ]);
 
-    const v2g = band2G?.result?.[1]?.Enable2;
-    const v5g = band5G?.result?.[1]?.Enable2;
+    const v2g = band2G?.Enable2;
+    const v5g = band5G?.Enable2;
 
-    // Solo consideramos activa si AMBAS bandas lo están.
+    // Solo activa si AMBAS bandas lo están.
     const active = v2g === "1" && v5g === "1";
 
     return {
@@ -141,12 +140,10 @@ export class RouterService {
     };
   }
 
-  /** Activa la red de invitados en ambas bandas. No-op si ya está activa. */
   async enableGuest(): Promise<void> {
     return this.setGuestState(true);
   }
 
-  /** Desactiva la red de invitados en ambas bandas. No-op si ya está desactivada. */
   async disableGuest(): Promise<void> {
     return this.setGuestState(false);
   }
@@ -177,14 +174,14 @@ export class RouterService {
     let changed = false;
 
     for (const band of bands) {
-      const current = await this.getBandConfig(band);
-      const currentValue = current.result?.[1]?.Enable2;
+      const currentValues = await this.getBandConfig(band);
+      const currentValue = currentValues.Enable2;
       if (currentValue === target) continue;
 
-      // Merge inteligente: NO pisamos otros campos. Solo cambiamos Enable2.
-      const newValues = { ...current.result[1], Enable2: target };
+      // Merge: NO pisamos otros campos. Solo cambiamos Enable2.
+      const newValues: UciWificfgValues = { ...currentValues, Enable2: target };
       await this.callWithRetry({
-        method: "uci",
+        method: "set",
         payload: { config: "wificfg", section: band, values: newValues },
       });
       changed = true;
@@ -198,10 +195,53 @@ export class RouterService {
   /** Ejecuta `uci apply` para que los cambios tomen efecto. */
   private async applyChanges(): Promise<void> {
     await this.callWithRetry({
-      method: "uci",
+      method: "apply",
       payload: { timeout: "60" },
-      extra: ["apply"],
     });
+  }
+
+  /**
+   * Parseo defensivo de la respuesta de `uci get`.
+   * Acepta DOS formatos de respuesta (compatibilidad con distintos firmwares):
+   *   1. OpenWRT estándar: result[1] = { values: { Enable2: "1", ... } }
+   *   2. Variante:          result[1] = { Enable2: "1", ... }
+   * Lanza un error claro si la respuesta no tiene la forma esperada,
+   * incluyendo el JSON crudo para debug.
+   */
+  private parseUciValues(response: unknown, band: WifiBand): UciWificfgValues {
+    if (!response || typeof response !== "object") {
+      throw new Error(`uci ${band}: respuesta no es un objeto`);
+    }
+
+    const r = response as { result?: unknown; error?: unknown };
+
+    if (r.error !== undefined) {
+      throw new Error(`uci ${band} error: ${JSON.stringify(r.error)}`);
+    }
+
+    if (!Array.isArray(r.result) || r.result.length < 2) {
+      const snippet = JSON.stringify(response).slice(0, 300);
+      throw new Error(`uci ${band}: respuesta sin result[1]. Recibido: ${snippet}`);
+    }
+
+    const [status, data] = r.result;
+    if (status !== 0) {
+      throw new Error(`uci ${band}: código ${status}, data: ${JSON.stringify(data)}`);
+    }
+
+    if (!data || typeof data !== "object") {
+      throw new Error(`uci ${band}: data inválida: ${JSON.stringify(data)}`);
+    }
+
+    const dataObj = data as Record<string, unknown>;
+
+    // Formato 1: result[1].values.Enable2
+    if (dataObj.values && typeof dataObj.values === "object") {
+      return dataObj.values as UciWificfgValues;
+    }
+
+    // Formato 2: result[1].Enable2
+    return dataObj as UciWificfgValues;
   }
 
   /**
@@ -214,7 +254,6 @@ export class RouterService {
     } catch (err) {
       const message = (err as Error).message;
       if (this.isSessionError(message)) {
-        // Forzar re-login y reintentar una sola vez.
         this.invalidateSession();
         return this.ubusCall(params);
       }
@@ -223,12 +262,12 @@ export class RouterService {
   }
 
   private isSessionError(message: string): boolean {
-    return /session/i.test(message) || /5$/.test(message); // UBUS usa 5 para session errors
+    return /session/i.test(message) || /access denied/i.test(message) || /unauthorized/i.test(message);
   }
 
   private async ubusCall(params: UbusCallParams): Promise<unknown> {
     const session = await this.ensureSession();
-    const target = params.extra ? [session.token, "uci", params.extra[0], params.payload] : [session.token, "uci", params.method, params.payload];
+    const target = [session.token, "uci", params.method, params.payload];
 
     const body = {
       jsonrpc: "2.0",
