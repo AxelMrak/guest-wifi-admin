@@ -55,6 +55,7 @@ const routerService = new RouterService({
   url: ROUTER_URL,
   username: ROUTER_USERNAME,
   password: ROUTER_PASSWORD,
+  log: (msg: string) => console.log(`[router] ${msg}`),
 });
 const schedulerService = new SchedulerService(configService, routerService);
 

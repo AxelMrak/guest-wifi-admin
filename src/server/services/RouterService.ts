@@ -3,39 +3,86 @@
  * ----------------------------------------------------------------------------
  * Encapsula TODA la comunicación con el router mediante el protocolo UBUS.
  *
- * Responsabilidades:
- *   - Login y mantenimiento de la sesión.
+ * Características:
+ *   - Descubrimiento automático de secciones WiFi (guest) del UCI wireless.
+ *   - Soporte dual de claves de activación (Enable2 / disabled).
+ *   - Login robusto con múltiples formatos de respuesta.
  *   - Reintentos automáticos cuando la sesión expira.
- *   - Lectura / escritura de la configuración de las bandas 2G y 5G.
- *   - Activación / desactivación de la red de invitados.
- *   - Aplicación de cambios (`uci apply`).
+ *   - Log opcional para debugging en producción.
  *
  * Es la única pieza del sistema que conoce el protocolo UBUS. Si en el futuro
  * se cambia de router, este es el único archivo a tocar.
  */
 
-import type { RouterSession, UciWificfgValues, WifiBand } from "../types";
+import type { WifiBand } from "../types";
+
+// ---------------------------------------------------------------------------
+// Tipos internos
+// ---------------------------------------------------------------------------
 
 const UBUS_NULL_SESSION = "00000000000000000000000000000000";
 const REQUEST_TIMEOUT_MS = 8_000;
+const UCI_CONFIG = "wireless"; // ← era "wificfg", nombre estándar es "wireless"
+
+export type LogFn = (message: string) => void;
+
+interface RouterSession {
+  token: string;
+  obtainedAt: number;
+}
 
 interface UbusCallParams {
+  service: string;
   method: string;
   payload: Record<string, unknown>;
 }
+
+/** Información de una sección WiFi descubierta en el UCI */
+interface WirelessSection {
+  /** Nombre de la sección UCI (ej: "@wifi-iface[1]") */
+  uciName: string;
+  /** Banda inferida: "2G" o "5G" */
+  band: WifiBand;
+  /** Clave que controla encendido/apagado ("Enable2" o "disabled") */
+  enableKey: string;
+  /** Valor de la clave que significa "activado" */
+  activeValue: string;
+  /** Valor de la clave que significa "desactivado" */
+  inactiveValue: string;
+}
+
+/** Valores crudos de una sección UCI */
+interface UciSectionValues {
+  [key: string]: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// RouterService
+// ---------------------------------------------------------------------------
 
 export class RouterService {
   private readonly url: string;
   private readonly username: string;
   private readonly password: string;
+  private readonly log: LogFn;
+
   private session: RouterSession | null = null;
   private loginInFlight: Promise<RouterSession> | null = null;
   private callId = 1;
 
-  constructor(config: { url: string; username: string; password: string }) {
+  /** Caché de secciones descubiertas (se puebla en el primer getGuestStatus) */
+  private cachedSections: WirelessSection[] | null = null;
+
+  constructor(config: {
+    url: string;
+    username: string;
+    password: string;
+    log?: LogFn;
+  }) {
     this.url = config.url;
     this.username = config.username;
     this.password = config.password;
+    this.log = config.log ?? (() => {});
   }
 
   // ---------------------------------------------------------------------------
@@ -67,8 +114,6 @@ export class RouterService {
   }
 
   private isSessionExpired(session: RouterSession): boolean {
-    // Las sesiones UBUS suelen expirar a los 60-300s. Renovamos cada 90s
-    // para evitar carreras sin generar tráfico excesivo.
     const SESSION_TTL_MS = 90_000;
     return Date.now() - session.obtainedAt > SESSION_TTL_MS;
   }
@@ -86,57 +131,129 @@ export class RouterService {
       ],
     };
 
+    this.log(`[login] POST ${this.url} intentando sesión…`);
     const res = await this.rawCall(body);
 
-    if (!res || res.result?.[0] !== 0) {
+    if (!res) {
+      throw new Error("Login UBUS: sin respuesta del router");
+    }
+
+    // Error explícito del router
+    if (res.error) {
+      const snippet = JSON.stringify(res.error).slice(0, 400);
+      throw new Error(`Login UBUS rechazado: ${snippet}`);
+    }
+
+    // Resultado exitoso: formato [0, { ubus_rpc_session: "…" }]
+    if (Array.isArray(res.result)) {
+      const statusCode = res.result[0];
+      if (statusCode !== 0) {
+        throw new Error(
+          `Login UBUS: código de estado ${statusCode} – ${JSON.stringify(res.result).slice(0, 300)}`,
+        );
+      }
+
+      const data = res.result[1];
+
+      // Formato 1: { ubus_rpc_session: "token" }
+      if (typeof data === "object" && data !== null && "ubus_rpc_session" in data) {
+        const token = (data as Record<string, unknown>).ubus_rpc_session as string;
+        this.session = { token, obtainedAt: Date.now() };
+        this.log(`[login] sesión obtenida (token: ${token.slice(0, 8)}…)`);
+        return this.session;
+      }
+
+      // Formato 2: el token es directamente un string en result[1]
+      if (typeof data === "string" && data.length > 10) {
+        this.session = { token: data, obtainedAt: Date.now() };
+        this.log(`[login] sesión obtenida (token directo: ${data.slice(0, 8)}…)`);
+        return this.session;
+      }
+
+      // Formato 3: { token: "…" } o { session: "…" }
+      if (typeof data === "object" && data !== null) {
+        const obj = data as Record<string, unknown>;
+        const token = (obj.token ?? obj.session ?? obj.session_id) as string | undefined;
+        if (typeof token === "string" && token.length > 10) {
+          this.session = { token, obtainedAt: Date.now() };
+          this.log(`[login] sesión obtenida (campo alternativo: ${token.slice(0, 8)}…)`);
+          return this.session;
+        }
+      }
+
       throw new Error(
-        `Login UBUS falló: ${JSON.stringify(res?.result ?? res?.error ?? "sin respuesta")}`,
+        `Login UBUS: no se pudo extraer token de la respuesta: ${JSON.stringify(data).slice(0, 300)}`,
       );
     }
 
-    const sessionId = res.result?.[1]?.ubus_rpc_session;
-    if (!sessionId) {
-      throw new Error("Login UBUS sin session id en la respuesta");
+    // Resultado no es array, tal vez es un objeto con token directo
+    if (typeof res.result === "object" && res.result !== null) {
+      const obj = res.result as Record<string, unknown>;
+      const token = (obj.ubus_rpc_session ?? obj.token ?? obj.session) as string | undefined;
+      if (typeof token === "string" && token.length > 10) {
+        this.session = { token, obtainedAt: Date.now() };
+        this.log(`[login] sesión obtenida (formato objeto: ${token.slice(0, 8)}…)`);
+        return this.session;
+      }
     }
 
-    this.session = { token: sessionId, obtainedAt: Date.now() };
-    return this.session;
+    throw new Error(
+      `Login UBUS: formato de respuesta inesperado: ${JSON.stringify(res).slice(0, 400)}`,
+    );
   }
 
   // ---------------------------------------------------------------------------
   // API pública
   // ---------------------------------------------------------------------------
 
-  /** Devuelve los valores de config de una banda. Lanza si la respuesta es inválida. */
-  async getBandConfig(band: WifiBand): Promise<UciWificfgValues> {
-    const response = await this.callWithRetry({
-      method: "get",
-      payload: { config: "wificfg", section: band },
-    });
-    return this.parseUciValues(response, band);
-  }
-
   /**
    * Estado actual de la red de invitados.
-   * Una banda se considera activa si `Enable2 === "1"`.
-   * Si alguna banda falla al leer, esa banda se considera `undefined` y el
-   * estado global cae a `false` (estado seguro: "no sabemos, asumimos apagado").
+   * Una banda se considera activa si la clave de control (Enable2 o disabled)
+   * tiene el valor que significa "encendido".
+   *
+   * En el primer llamado descubre automáticamente las secciones wireless del
+   * router. Si el descubrimiento falla, lanza error con instrucciones.
    */
-  async getGuestStatus(): Promise<{ active: boolean; values: Record<WifiBand, string | undefined> }> {
-    const [band2G, band5G] = await Promise.all([
-      this.getBandConfig("2G").catch(() => null),
-      this.getBandConfig("5G").catch(() => null),
-    ]);
+  async getGuestStatus(): Promise<{
+    active: boolean;
+    values: Record<WifiBand, string | undefined>;
+    sections: Record<string, string>;
+  }> {
+    // Descubrir secciones si no tenemos caché
+    if (!this.cachedSections) {
+      this.cachedSections = await this.discoverGuestSections();
+    }
 
-    const v2g = band2G?.Enable2;
-    const v5g = band5G?.Enable2;
+    const results: Record<WifiBand, { rawValue: string | undefined; active: boolean }> = {
+      "2G": { rawValue: undefined, active: false },
+      "5G": { rawValue: undefined, active: false },
+    };
 
-    // Solo activa si AMBAS bandas lo están.
-    const active = v2g === "1" && v5g === "1";
+    const sectionMap: Record<string, string> = {};
+
+    for (const section of this.cachedSections) {
+      sectionMap[section.band] = section.uciName;
+
+      try {
+        const values = await this.getSectionValues(section.uciName);
+        const rawValue = values[section.enableKey];
+        results[section.band].rawValue = rawValue;
+        results[section.band].active = rawValue === section.activeValue;
+      } catch (err) {
+        this.log(`[getGuestStatus] error leyendo ${section.band} (${section.uciName}): ${(err as Error).message}`);
+        // Si una banda falla, la tratamos como inactiva (safe default)
+      }
+    }
+
+    const active = results["2G"].active && results["5G"].active;
 
     return {
       active,
-      values: { "2G": v2g, "5G": v5g },
+      values: {
+        "2G": results["2G"].rawValue,
+        "5G": results["5G"].rawValue,
+      },
+      sections: sectionMap,
     };
   }
 
@@ -152,7 +269,9 @@ export class RouterService {
   async ping(): Promise<{ ok: boolean; error?: string }> {
     try {
       await this.ensureSession();
-      await this.getBandConfig("2G");
+      // Forzamos descubrimiento fresco
+      this.cachedSections = null;
+      await this.getGuestStatus();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -160,29 +279,378 @@ export class RouterService {
   }
 
   // ---------------------------------------------------------------------------
-  // Internals
+  // Descubrimiento de secciones
   // ---------------------------------------------------------------------------
 
   /**
-   * Activa o desactiva modificando SOLO `Enable2` en ambas bandas.
-   * Lee la config actual primero, modifica únicamente ese campo, y aplica.
-   * Solo emite comandos si realmente hay un cambio.
+   * Descubre automáticamente las secciones WiFi de invitados en el UCI.
+   *
+   * Estrategia:
+   *   1. Obtener TODA la configuración wireless del router.
+   *   2. Buscar secciones que parezcan interfaces de invitados
+   *      (por network="guest", ssid que contenga "guest"/"invitado",
+   *       o que sean wifi-iface con propiedades particulares).
+   *   3. Si no se encuentran, intentar @wifi-iface[0], @wifi-iface[1], etc.
+   *
+   * Lanza error con instrucciones si no puede descubrir nada.
+   */
+  private async discoverGuestSections(): Promise<WirelessSection[]> {
+    this.log("[discover] buscando secciones wireless del guest…");
+
+    const allSections = await this.getAllWirelessSections();
+
+    if (!allSections || Object.keys(allSections).length === 0) {
+      throw new Error(
+        `No se pudo obtener la configuración wireless del router. ` +
+        `Verificá que la URL (${this.url}) y las credenciales sean correctas.`,
+      );
+    }
+
+    this.log(`[discover] secciones encontradas: ${Object.keys(allSections).join(", ")}`);
+
+    // Filtrar las que parezcan interfaces WiFi de invitados
+    const guestCandidates = this.findGuestInterfaces(allSections);
+
+    if (guestCandidates.length >= 2) {
+      this.log(`[discover] interfaces guest detectadas: ${guestCandidates.map((s) => `${s.band}=${s.uciName}`).join(", ")}`);
+      return guestCandidates;
+    }
+
+    // No encontramos suficientes — intentar con patrones comunes
+    this.log("[discover] búsqueda heurística de interfaces invitado…");
+    const heuristic = this.heuristicGuestSections(allSections);
+
+    if (heuristic.length >= 2) {
+      this.log(`[discover] interfaces guest (heurística): ${heuristic.map((s) => `${s.band}=${s.uciName}`).join(", ")}`);
+      return heuristic;
+    }
+
+    // Último recurso: listar lo que hay para que el usuario configure manualmente
+    const available = Object.entries(allSections)
+      .map(([name, vals]) => {
+        const type = vals[".type"] ?? "desconocido";
+        const ssid = vals.ssid ?? "(sin SSID)";
+        const network = vals.network ?? "(sin network)";
+        return `  • ${name} (${type}) ssid=${ssid} network=${network}`;
+      })
+      .join("\n");
+
+    throw new Error(
+      `No se encontraron interfaces WiFi de invitados.\n\n` +
+      `Secciones wireless del router:\n${available}\n\n` +
+      `Para configurar manualmente, ejecutá en el router:\n` +
+      `  uci show wireless | grep -i guest\n` +
+      `Y agregá los nombres de sección al archivo de configuración.`,
+    );
+  }
+
+  /**
+   * Obtiene todas las secciones de la configuración wireless.
+   * Prueba varios métodos de UBUS (algunos routers exponen la API de forma distinta).
+   */
+  private async getAllWirelessSections(): Promise<Record<string, UciSectionValues> | null> {
+    // Método 1: uci get_all (el más común en rpcd moderno)
+    try {
+      const res = await this.ubusCallRaw({
+        service: "uci",
+        method: "get_all",
+        payload: { config: UCI_CONFIG },
+      });
+      const sections = this.extractSectionsFromResponse(res);
+      if (sections && Object.keys(sections).length > 0) return sections;
+    } catch (err) {
+      this.log(`[discover] get_all falló: ${(err as Error).message}`);
+    }
+
+    // Método 2: uci get sin sección (algunos routers devuelven todo el config)
+    try {
+      const res = await this.ubusCallRaw({
+        service: "uci",
+        method: "get",
+        payload: { config: UCI_CONFIG },
+      });
+      const sections = this.extractSectionsFromResponse(res);
+      if (sections && Object.keys(sections).length > 0) return sections;
+    } catch (err) {
+      this.log(`[discover] get (sin sección) falló: ${(err as Error).message}`);
+    }
+
+    // Método 3: iterar @wifi-iface[0..5] y juntar resultados
+    try {
+      const sections: Record<string, UciSectionValues> = {};
+      for (let i = 0; i < 8; i++) {
+        const name = `@wifi-iface[${i}]`;
+        try {
+          const res = await this.ubusCallRaw({
+            service: "uci",
+            method: "get",
+            payload: { config: UCI_CONFIG, section: name },
+          });
+          const values = this.extractSingleSection(res);
+          if (values) sections[name] = values;
+        } catch {
+          break; // asumimos que no hay más
+        }
+      }
+      if (Object.keys(sections).length > 0) return sections;
+    } catch (err) {
+      this.log(`[discover] iteración @wifi-iface falló: ${(err as Error).message}`);
+    }
+
+    return null;
+  }
+
+  /**
+   * Dado un objeto con todas las secciones wireless, identifica cuáles son
+   * las interfaces de invitados.
+   *
+   * Criterios:
+   *   - Tipo ".type" = "wifi-iface" (no "wifi-device")
+   *   - network = "guest" o similar
+   *   - ssid contiene "guest", "invitado", "invitad"
+   *   - O si no hay candidatos claros, asume que las últimas wifi-iface son guest
+   */
+  private findGuestInterfaces(allSections: Record<string, UciSectionValues>): WirelessSection[] {
+    const ifaces = Object.entries(allSections)
+      .filter(([, vals]) => vals[".type"] === "wifi-iface")
+      .map(([name, vals]) => ({ name, vals }));
+
+    if (ifaces.length < 2) return [];
+
+    const guestPattern = /guest|invitad|visitante/i;
+
+    const guestIfaces = ifaces.filter(({ vals }) => {
+      const net = (vals.network ?? "").toLowerCase();
+      const ssid = (vals.ssid ?? "").toLowerCase();
+      return guestPattern.test(net) || guestPattern.test(ssid);
+    });
+
+    // Si encontramos al menos 2 interfaces que matchean, las usamos
+    if (guestIfaces.length >= 2) {
+      return this.buildSections(guestIfaces.slice(0, 2));
+    }
+
+    // Si encontramos 1, buscamos otra wifi-iface (la otra banda)
+    if (guestIfaces.length === 1) {
+      const other = ifaces.find((i) => i.name !== guestIfaces[0].name);
+      if (other) {
+        return this.buildSections([guestIfaces[0], other]);
+      }
+    }
+
+    // Si hay exactamente 2 wifi-iface, asumimos que son 2G y 5G guest
+    if (ifaces.length === 2) {
+      return this.buildSections(ifaces);
+    }
+
+    return [];
+  }
+
+  /**
+   * Heurística de último recurso: asume que las últimas wifi-iface son guest.
+   */
+  private heuristicGuestSections(allSections: Record<string, UciSectionValues>): WirelessSection[] {
+    const ifaces = Object.entries(allSections)
+      .filter(([, vals]) => vals[".type"] === "wifi-iface")
+      .map(([name, vals]) => ({ name, vals }));
+
+    if (ifaces.length < 2) return [];
+
+    // Tomamos las últimas 2 wifi-iface (las guest suelen agregarse después de las principales)
+    const candidates = ifaces.slice(-2);
+    return this.buildSections(candidates);
+  }
+
+  /**
+   * Construye objetos WirelessSection a partir de los candidatos detectados,
+   * determinando la banda (2G o 5G) y la clave de control.
+   */
+  private buildSections(
+    candidates: { name: string; vals: UciSectionValues }[],
+  ): WirelessSection[] {
+    return candidates.map(({ name, vals }, index) => {
+      // Intentar inferir la banda
+      let band: WifiBand = index === 0 ? "2G" : "5G";
+
+      // Si la sección tiene device, podríamos inferir la banda
+      const device = vals.device;
+      if (typeof device === "string") {
+        const lower = device.toLowerCase();
+        if (lower.includes("5g") || lower.includes("radio1") || lower.includes("radio_5g")) {
+          band = "5G";
+        } else if (lower.includes("2g") || lower.includes("radio0") || lower.includes("radio_2g")) {
+          band = "2G";
+        }
+      }
+
+      // Detectar la clave de control
+      const enableKey = this.detectEnableKey(vals);
+
+      return {
+        uciName: name,
+        band,
+        enableKey,
+        activeValue: enableKey === "disabled" ? "0" : "1",
+        inactiveValue: enableKey === "disabled" ? "1" : "0",
+      };
+    });
+  }
+
+  /**
+   * Detecta qué clave controla el encendido/apagado en los valores de la sección.
+   * Prioridad: Enable2 (firmwares custom) > disabled (OpenWRT estándar)
+   */
+  private detectEnableKey(vals: UciSectionValues): string {
+    if ("Enable2" in vals) return "Enable2";
+    if ("enabled2" in vals) return "enabled2";
+    if ("enable2" in vals) return "enable2";
+    if ("disabled" in vals) return "disabled";
+    if ("disabled2" in vals) return "disabled2";
+    // Fallback: asumimos disabled (estándar OpenWRT)
+    return "disabled";
+  }
+
+  /**
+   * Obtiene los valores de una sección específica del UCI.
+   */
+  private async getSectionValues(sectionName: string): Promise<UciSectionValues> {
+    const res = await this.callWithRetry({
+      service: "uci",
+      method: "get",
+      payload: { config: UCI_CONFIG, section: sectionName },
+    });
+    return this.parseSingleSection(res, sectionName);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Parseo de respuestas UCI
+  // ---------------------------------------------------------------------------
+
+  /** Extrae TODAS las secciones de una respuesta UBUS uci (get_all o get sin sección). */
+  private extractSectionsFromResponse(res: unknown): Record<string, UciSectionValues> | null {
+    if (!res || typeof res !== "object") return null;
+
+    const r = res as { result?: unknown; error?: unknown };
+    if (r.error !== undefined) return null;
+
+    if (!Array.isArray(r.result) || r.result.length < 2) return null;
+
+    const status = r.result[0];
+    if (status !== 0) return null;
+
+    const data = r.result[1];
+    if (!data || typeof data !== "object") return null;
+
+    const result: Record<string, UciSectionValues> = {};
+
+    // Caso: { "section_name": { ... }, "other_section": { ... } }
+    for (const [key, val] of Object.entries(data as Record<string, unknown>)) {
+      if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+        // Verificar que sea una sección UCI (suele tener .type, .name, .anonymous)
+        if (".type" in val || ".name" in val || ".anonymous" in val) {
+          result[key] = val as UciSectionValues;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /** Extrae UNA sección de una respuesta uci.get con section específica. */
+  private extractSingleSection(res: unknown): UciSectionValues | null {
+    if (!res || typeof res !== "object") return null;
+
+    const r = res as { result?: unknown; error?: unknown };
+    if (r.error !== undefined) return null;
+
+    if (!Array.isArray(r.result) || r.result.length < 2) return null;
+
+    const status = r.result[0];
+    if (status !== 0) return null;
+
+    const data = r.result[1];
+    if (!data || typeof data !== "object") return null;
+
+    return data as UciSectionValues;
+  }
+
+  /**
+   * Parseo de respuesta de una sección individual.
+   * Acepta DOS formatos (compatibilidad con distintos firmwares):
+   *   1. result[1].values.Enable2 (formato con objeto values anidado)
+   *   2. result[1].Enable2 (formato plano)
+   */
+  private parseSingleSection(res: unknown, sectionName: string): UciSectionValues {
+    if (!res || typeof res !== "object") {
+      throw new Error(`uci ${sectionName}: respuesta no es un objeto`);
+    }
+
+    const r = res as { result?: unknown; error?: unknown };
+
+    if (r.error !== undefined) {
+      this.log(`[uci] error en ${sectionName}: ${JSON.stringify(r.error).slice(0, 300)}`);
+      throw new Error(`uci ${sectionName}: error del router – ${JSON.stringify(r.error).slice(0, 200)}`);
+    }
+
+    if (!Array.isArray(r.result) || r.result.length < 2) {
+      const snippet = JSON.stringify(res).slice(0, 300);
+      throw new Error(`uci ${sectionName}: respuesta sin result[1]. Recibido: ${snippet}`);
+    }
+
+    const [status, data] = r.result;
+    if (status !== 0) {
+      throw new Error(`uci ${sectionName}: código ${status}, data: ${JSON.stringify(data).slice(0, 300)}`);
+    }
+
+    if (!data || typeof data !== "object") {
+      throw new Error(`uci ${sectionName}: data inválida: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+
+    const dataObj = data as Record<string, unknown>;
+
+    // Formato 1: result[1].values.Enable2
+    if (dataObj.values && typeof dataObj.values === "object") {
+      this.log(`[uci] ${sectionName}: valores encontrados (formato anidado), keys: ${Object.keys(dataObj.values as object).join(", ")}`);
+      return dataObj.values as UciSectionValues;
+    }
+
+    // Formato 2: result[1].Enable2 (plano)
+    this.log(`[uci] ${sectionName}: valores encontrados (formato plano), keys: ${Object.keys(dataObj).join(", ")}`);
+    return dataObj as UciSectionValues;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Acciones
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Activa o desactiva la red de invitados modificando SOLO la clave de control
+   * en cada banda. Solo emite comandos si realmente hay un cambio.
    */
   private async setGuestState(enabled: boolean): Promise<void> {
-    const target = enabled ? "1" : "0";
-    const bands: WifiBand[] = ["2G", "5G"];
+    if (!this.cachedSections) {
+      this.cachedSections = await this.discoverGuestSections();
+    }
+
     let changed = false;
 
-    for (const band of bands) {
-      const currentValues = await this.getBandConfig(band);
-      const currentValue = currentValues.Enable2;
-      if (currentValue === target) continue;
+    for (const section of this.cachedSections) {
+      const currentValues = await this.getSectionValues(section.uciName);
+      const targetValue = enabled ? section.activeValue : section.inactiveValue;
+      const currentValue = currentValues[section.enableKey];
 
-      // Merge: NO pisamos otros campos. Solo cambiamos Enable2.
-      const newValues: UciWificfgValues = { ...currentValues, Enable2: target };
+      if (currentValue === targetValue) continue;
+
+      this.log(`[setGuestState] cambiando ${section.band} (${section.uciName}).${section.enableKey}: ${currentValue} → ${targetValue}`);
+
       await this.callWithRetry({
+        service: "uci",
         method: "set",
-        payload: { config: "wificfg", section: band, values: newValues },
+        payload: {
+          config: UCI_CONFIG,
+          section: section.uciName,
+          values: { [section.enableKey]: targetValue },
+        },
       });
       changed = true;
     }
@@ -194,80 +662,54 @@ export class RouterService {
 
   /** Ejecuta `uci apply` para que los cambios tomen efecto. */
   private async applyChanges(): Promise<void> {
+    this.log(`[apply] aplicando cambios en ${UCI_CONFIG}…`);
     await this.callWithRetry({
+      service: "uci",
       method: "apply",
-      payload: { timeout: "60" },
+      payload: { config: UCI_CONFIG, timeout: 60 },
     });
+    this.log(`[apply] cambios aplicados.`);
   }
 
-  /**
-   * Parseo defensivo de la respuesta de `uci get`.
-   * Acepta DOS formatos de respuesta (compatibilidad con distintos firmwares):
-   *   1. OpenWRT estándar: result[1] = { values: { Enable2: "1", ... } }
-   *   2. Variante:          result[1] = { Enable2: "1", ... }
-   * Lanza un error claro si la respuesta no tiene la forma esperada,
-   * incluyendo el JSON crudo para debug.
-   */
-  private parseUciValues(response: unknown, band: WifiBand): UciWificfgValues {
-    if (!response || typeof response !== "object") {
-      throw new Error(`uci ${band}: respuesta no es un objeto`);
-    }
-
-    const r = response as { result?: unknown; error?: unknown };
-
-    if (r.error !== undefined) {
-      throw new Error(`uci ${band} error: ${JSON.stringify(r.error)}`);
-    }
-
-    if (!Array.isArray(r.result) || r.result.length < 2) {
-      const snippet = JSON.stringify(response).slice(0, 300);
-      throw new Error(`uci ${band}: respuesta sin result[1]. Recibido: ${snippet}`);
-    }
-
-    const [status, data] = r.result;
-    if (status !== 0) {
-      throw new Error(`uci ${band}: código ${status}, data: ${JSON.stringify(data)}`);
-    }
-
-    if (!data || typeof data !== "object") {
-      throw new Error(`uci ${band}: data inválida: ${JSON.stringify(data)}`);
-    }
-
-    const dataObj = data as Record<string, unknown>;
-
-    // Formato 1: result[1].values.Enable2
-    if (dataObj.values && typeof dataObj.values === "object") {
-      return dataObj.values as UciWificfgValues;
-    }
-
-    // Formato 2: result[1].Enable2
-    return dataObj as UciWificfgValues;
+  /** Limpia la caché de secciones — útil después de un cambio de config. */
+  clearSectionCache(): void {
+    this.cachedSections = null;
   }
 
+  // ---------------------------------------------------------------------------
+  // Llamadas UBUS
+  // ---------------------------------------------------------------------------
+
   /**
-   * Realiza una llamada UBUS con retry automático ante sesión inválida.
-   * Si el router devuelve código de error de sesión, relogea y reintenta UNA vez.
+   * Llamada UBUS con retry automático ante sesión inválida.
    */
   private async callWithRetry(params: UbusCallParams): Promise<unknown> {
     try {
-      return await this.ubusCall(params);
+      return await this.ubusCallRaw(params);
     } catch (err) {
       const message = (err as Error).message;
       if (this.isSessionError(message)) {
+        this.log(`[retry] sesión inválida detectada, relogeando…`);
         this.invalidateSession();
-        return this.ubusCall(params);
+        return this.ubusCallRaw(params);
       }
       throw err;
     }
   }
 
   private isSessionError(message: string): boolean {
-    return /session/i.test(message) || /access denied/i.test(message) || /unauthorized/i.test(message);
+    return (
+      /session/i.test(message) ||
+      /access denied/i.test(message) ||
+      /unauthorized/i.test(message) ||
+      /no permission/i.test(message) ||
+      /not found/i.test(message)
+    );
   }
 
-  private async ubusCall(params: UbusCallParams): Promise<unknown> {
+  private async ubusCallRaw(params: UbusCallParams): Promise<unknown> {
     const session = await this.ensureSession();
-    const target = [session.token, "uci", params.method, params.payload];
+    const target = [session.token, params.service, params.method, params.payload];
 
     const body = {
       jsonrpc: "2.0",
@@ -292,13 +734,21 @@ export class RouterService {
       });
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status} desde router`);
+        const text = await res.text().catch(() => "(sin cuerpo)");
+        throw new Error(`HTTP ${res.status} desde router: ${text.slice(0, 200)}`);
       }
 
-      return await res.json();
+      const json = (await res.json()) as Record<string, unknown>;
+
+      // Si hay error UBUS, loguearlo para debug
+      if (json.error) {
+        this.log(`[ubus] error: ${JSON.stringify(json.error).slice(0, 300)}`);
+      }
+
+      return json;
     } catch (err) {
       if ((err as Error).name === "AbortError") {
-        throw new Error("Timeout contactando al router");
+        throw new Error("Timeout contactando al router (8s)");
       }
       throw err;
     } finally {
