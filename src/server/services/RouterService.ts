@@ -3,15 +3,8 @@
  * ----------------------------------------------------------------------------
  * Encapsula TODA la comunicación con el router mediante el protocolo UBUS.
  *
- * Características:
- *   - Descubrimiento automático de secciones WiFi (guest) del UCI wireless.
- *   - Soporte dual de claves de activación (Enable2 / disabled).
- *   - Login robusto con múltiples formatos de respuesta.
- *   - Reintentos automáticos cuando la sesión expira.
- *   - Log opcional para debugging en producción.
- *
- * Es la única pieza del sistema que conoce el protocolo UBUS. Si en el futuro
- * se cambia de router, este es el único archivo a tocar.
+ * Basado en las llamadas reales del portal cautivo del router (ZTE/Huawei).
+ * Usa config "wificfg", secciones "2G"/"5G", y clave Enable2.
  */
 
 import type { WifiBand } from "../types";
@@ -279,10 +272,13 @@ export class RouterService {
   }
 
   /**
-   * Lista TODOS los servicios UBUS disponibles en el router (sin auth).
+   * Lista TODOS los servicios UBUS disponibles en el router.
+   * Usa sesión autenticada porque este router restringe `list` sin auth.
    * `ubus list` sin params devuelve array de nombres de servicio.
    */
   async listAllServices(): Promise<string[]> {
+    await this.ensureSession();
+
     const body = {
       jsonrpc: "2.0",
       id: this.nextId(),
@@ -301,42 +297,15 @@ export class RouterService {
       throw new Error(`list: ${JSON.stringify(res.error).slice(0, 300)}`);
     }
 
+    this.log(`[list] raw response: ${JSON.stringify(res).slice(0, 600)}`);
+
     const raw = res.result;
     if (Array.isArray(raw)) {
-      const count = raw.length;
-      const wifiRelated = raw.filter(
-        (n: string) =>
-          n.includes("wifi") ||
-          n.includes("wireless") ||
-          n.includes("wlan") ||
-          n.includes("guest") ||
-          n.includes("radio") ||
-          n.includes("wificfg") ||
-          n.includes("network") ||
-          n.includes("hotspot") ||
-          n.includes("rkey"),
-      );
-
-      this.log(`[list] ${count} servicios. WiFi/red/rkey: ${wifiRelated.join(", ")}`);
       return raw as string[];
     }
 
     const obj = raw as Record<string, unknown>;
     if (obj && typeof obj === "object") {
-      const count = Object.keys(obj).length;
-      const wifiRelated = Object.keys(obj).filter(
-        (k) =>
-          k.includes("wifi") ||
-          k.includes("wireless") ||
-          k.includes("wlan") ||
-          k.includes("guest") ||
-          k.includes("radio") ||
-          k.includes("wificfg") ||
-          k.includes("network") ||
-          k.includes("hotspot") ||
-          k.includes("rkey"),
-      );
-      this.log(`[list] ${count} servicios (objeto). WiFi/red/rkey: ${wifiRelated.join(", ") || "ninguno"}`);
       return Object.keys(obj);
     }
 
@@ -344,10 +313,12 @@ export class RouterService {
   }
 
   /**
-   * Describe los métodos y firmas de un servicio UBUS (sin auth).
+   * Describe los métodos y firmas de un servicio UBUS (con auth).
    * `ubus list [name]` devuelve { método: { params: ... } }.
    */
   async describeService(name: string): Promise<Record<string, unknown>> {
+    await this.ensureSession();
+
     const body = {
       jsonrpc: "2.0",
       id: this.nextId(),
@@ -372,6 +343,14 @@ export class RouterService {
 
     this.log(`[describe] "${name}" → ${Object.keys(methods).join(", ")}`);
     return methods;
+  }
+
+  /**
+   * Llama a un método arbitrario de un servicio (con auth).
+   * Útil para explorar API de routerd y similares.
+   */
+  async callService(service: string, method: string, payload: Record<string, unknown> = {}): Promise<unknown> {
+    return this.callWithRetry({ service, method, payload });
   }
 
   // ---------------------------------------------------------------------------

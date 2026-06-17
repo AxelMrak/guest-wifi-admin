@@ -192,6 +192,24 @@ try {
       console.log(`[diag]   ${name}: ERROR — ${(err as Error).message}`);
     }
   }
+
+  // Exploración adicional: llamar directamente a métodos de routerd y rkey.*
+  console.log("[diag] exploración adicional — llamando a routerd.info y rkey.* …");
+  const tryMethods: Array<{ service: string; method: string; payload?: Record<string, unknown> }> = [
+    { service: "routerd", method: "info" },
+    { service: "rkey.routerd", method: "info" },
+    { service: "rkey.uci", method: "list" },
+    { service: "network.wireless", method: "status" },
+  ];
+
+  for (const { service, method, payload } of tryMethods) {
+    try {
+      const res = await routerService.callService(service, method, payload);
+      console.log(`[diag] ${service}.${method}: ${JSON.stringify(res).slice(0, 500)}`);
+    } catch (err) {
+      console.log(`[diag] ${service}.${method}: ERROR — ${(err as Error).message}`);
+    }
+  }
 } catch (err) {
   console.log(`[diag] falló descubrimiento UBUS: ${(err as Error).message}`);
 }
