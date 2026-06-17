@@ -36,6 +36,8 @@ const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const ROUTER_URL = process.env.ROUTER_URL ?? "http://192.168.0.1/ubus";
 const ROUTER_USERNAME = process.env.ROUTER_USERNAME ?? "useradmin";
 const ROUTER_PASSWORD = process.env.ROUTER_PASSWORD ?? "";
+const ROUTER_PHONE_ID = process.env.ROUTER_PHONE_ID ?? "";
+const ROUTER_RID = process.env.ROUTER_RID ?? "";
 const SERVER_PORT = Number(process.env.SERVER_PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const SETTINGS_PATH = path.join(ROOT_DIR, "data", "settings.json");
@@ -55,6 +57,8 @@ const routerService = new RouterService({
   url: ROUTER_URL,
   username: ROUTER_USERNAME,
   password: ROUTER_PASSWORD,
+  phoneId: ROUTER_PHONE_ID,
+  rid: ROUTER_RID,
   log: (msg: string) => console.log(`[router] ${msg}`),
 });
 const schedulerService = new SchedulerService(configService, routerService);
@@ -238,8 +242,12 @@ try {
     }
   }
 
-  // 2) Probar rkey.uci.get con argumentos válidos (config + section)
-  const rkeyUciTests = [
+  // 2) Probar uci.* y rkey.uci.* con los nuevos headers
+  const tryMethods: Array<{ service: string; method: string; payload?: Record<string, unknown> }> = [
+    { service: "uci", method: "get", payload: { config: "wificfg", section: "2G" } },
+    { service: "uci", method: "get", payload: { config: "wificfg", section: "5G" } },
+    { service: "uci", method: "get", payload: { config: "wificfg" } },
+    { service: "uci", method: "apply", payload: { timeout: "60" } },
     { service: "rkey.uci", method: "get", payload: { config: "wificfg", section: "2G" } },
     { service: "rkey.uci", method: "get", payload: { config: "wificfg", section: "5G" } },
     { service: "rkey.uci", method: "get", payload: { config: "wificfg" } },
@@ -249,8 +257,8 @@ try {
     { service: "rkey.uci", method: "configs", payload: {} },
   ];
 
-  console.log("[diag] probando rkey.uci con argumentos…");
-  for (const { service, method, payload } of rkeyUciTests) {
+  console.log("[diag] probando uci.* y rkey.uci.* con nuevos headers…");
+  for (const { service, method, payload } of tryMethods) {
     try {
       const res = await routerService.callService(service, method, payload);
       const snippet = JSON.stringify(res).slice(0, 400);

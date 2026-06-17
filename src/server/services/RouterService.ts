@@ -58,6 +58,8 @@ export class RouterService {
   private readonly username: string;
   private readonly password: string;
   private readonly log: LogFn;
+  private readonly phoneId: string;
+  private readonly rid: string;
 
   private session: RouterSession | null = null;
   private loginInFlight: Promise<RouterSession> | null = null;
@@ -70,12 +72,28 @@ export class RouterService {
     url: string;
     username: string;
     password: string;
+    phoneId?: string;
+    rid?: string;
     log?: LogFn;
   }) {
     this.url = config.url;
     this.username = config.username;
     this.password = config.password;
+    this.phoneId = config.phoneId ?? "";
+    this.rid = config.rid ?? "";
     this.log = config.log ?? (() => {});
+  }
+
+  /**
+   * URL final con query params del portal cautivo (phoneId, rid) si están configurados.
+   * El portal cautivo agrega estos params desde localStorage después del login HTTP.
+   */
+  private get ubusUrl(): string {
+    if (!this.phoneId && !this.rid) return this.url;
+    const u = new URL(this.url);
+    if (this.phoneId) u.searchParams.set("phoneId", this.phoneId);
+    if (this.rid) u.searchParams.set("rid", this.rid);
+    return u.toString();
   }
 
   // ---------------------------------------------------------------------------
@@ -832,13 +850,15 @@ export class RouterService {
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const routerOrigin = new URL(this.url).origin;
-      const res = await fetch(this.url, {
+      const targetUrl = this.ubusUrl;
+      const routerOrigin = new URL(targetUrl).origin;
+      const res = await fetch(targetUrl, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json;charset=UTF-8",
           "Referer": routerOrigin + "/",
           "Origin": routerOrigin,
+          "X-Requested-With": "XMLHttpRequest",
         },
         body: JSON.stringify(body),
         signal: controller.signal,
