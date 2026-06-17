@@ -22,7 +22,7 @@ import type { WifiBand } from "../types";
 
 const UBUS_NULL_SESSION = "00000000000000000000000000000000";
 const REQUEST_TIMEOUT_MS = 8_000;
-const UCI_CONFIG = "wireless"; // ← era "wificfg", nombre estándar es "wireless"
+const UCI_CONFIG = "wificfg";
 
 export type LogFn = (message: string) => void;
 
@@ -756,15 +756,47 @@ export class RouterService {
     }
   }
 
-  /** Ejecuta `uci apply` para que los cambios tomen efecto. */
+  /** Ejecuta `uci apply` y espera a que los cambios se apliquen en el WiFi. */
   private async applyChanges(): Promise<void> {
     this.log(`[apply] aplicando cambios en ${UCI_CONFIG}…`);
     await this.callWithRetry({
       service: "uci",
       method: "apply",
-      payload: { config: UCI_CONFIG, timeout: 60 },
+      payload: { timeout: 60 },
     });
+
+    // Esperar a que el WiFi procese los cambios (el portal cautivo hace esto)
+    try {
+      await this.waitForWifiApply();
+    } catch (err) {
+      this.log(`[apply] wifi.get_apply_status falló (no crítico): ${(err as Error).message}`);
+    }
+
     this.log(`[apply] cambios aplicados.`);
+  }
+
+  /**
+   * Espera a que el subsistema WiFi termine de aplicar los cambios de UCI.
+   * Llama a `wifi.get_apply_status` hasta que devuelva success.
+   */
+  private async waitForWifiApply(): Promise<void> {
+    const maxAttempts = 10;
+    for (let i = 0; i < maxAttempts; i++) {
+      const res = (await this.callWithRetry({
+        service: "wifi",
+        method: "get_apply_status",
+        payload: {},
+      })) as { status?: string; success?: boolean };
+
+      if (res?.status === "success" || res?.success === true) {
+        this.log(`[apply] wifi listo (intento ${i + 1})`);
+        return;
+      }
+
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    throw new Error("wifi.get_apply_status no terminó a tiempo");
   }
 
   /** Limpia la caché de secciones — útil después de un cambio de config. */
@@ -796,7 +828,6 @@ export class RouterService {
   private isSessionError(message: string): boolean {
     return (
       /session/i.test(message) ||
-      /access denied/i.test(message) ||
       /unauthorized/i.test(message) ||
       /no permission/i.test(message) ||
       /not found/i.test(message)
@@ -822,9 +853,14 @@ export class RouterService {
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
+      const routerOrigin = new URL(this.url).origin;
       const res = await fetch(this.url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Referer": routerOrigin + "/",
+          "Origin": routerOrigin,
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
