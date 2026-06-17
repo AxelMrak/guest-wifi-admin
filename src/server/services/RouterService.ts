@@ -278,6 +278,83 @@ export class RouterService {
     }
   }
 
+  /**
+   * Lista TODOS los servicios UBUS disponibles en el router (sin auth).
+   * Retorna el objeto completo con servicios → métodos → firmas.
+   */
+  async listAllServices(): Promise<Record<string, unknown>> {
+    const body = {
+      jsonrpc: "2.0",
+      id: this.nextId(),
+      method: "list",
+      params: [],
+    };
+
+    this.log("[list] consultando servicios UBUS disponibles…");
+    const res = await this.rawCall(body);
+
+    if (!res || typeof res !== "object") {
+      throw new Error("list: sin respuesta del router");
+    }
+
+    if (res.error) {
+      throw new Error(`list: ${JSON.stringify(res.error).slice(0, 300)}`);
+    }
+
+    // list devuelve result directamente como objeto, no array
+    const services = res.result as Record<string, unknown> | undefined;
+    if (!services || typeof services !== "object") {
+      throw new Error(`list: resultado inesperado: ${JSON.stringify(res).slice(0, 300)}`);
+    }
+
+    const count = Object.keys(services).length;
+    const wifiRelated = Object.keys(services).filter(
+      (k) =>
+        k.includes("wifi") ||
+        k.includes("wireless") ||
+        k.includes("wlan") ||
+        k.includes("guest") ||
+        k.includes("radio") ||
+        k.includes("wificfg") ||
+        k.includes("network"),
+    );
+
+    this.log(`[list] ${count} servicios encontrados. Relacionados a WiFi: ${wifiRelated.join(", ") || "ninguno"}`);
+
+    return services;
+  }
+
+  /**
+   * Describe los métodos y firmas de un servicio UBUS específico (sin auth).
+   */
+  async describeService(name: string): Promise<Record<string, unknown>> {
+    const body = {
+      jsonrpc: "2.0",
+      id: this.nextId(),
+      method: "list",
+      params: [name],
+    };
+
+    this.log(`[describe] inspeccionando servicio "${name}"…`);
+    const res = await this.rawCall(body);
+
+    if (!res || typeof res !== "object") {
+      throw new Error(`describe ${name}: sin respuesta`);
+    }
+
+    if (res.error) {
+      throw new Error(`describe ${name}: ${JSON.stringify(res.error).slice(0, 300)}`);
+    }
+
+    const methods = res.result as Record<string, unknown> | undefined;
+    if (!methods || typeof methods !== "object") {
+      throw new Error(`describe ${name}: resultado inesperado`);
+    }
+
+    this.log(`[describe] "${name}" → métodos: ${Object.keys(methods).join(", ")}`);
+    return methods;
+  }
+
   // ---------------------------------------------------------------------------
   // Descubrimiento de secciones
   // ---------------------------------------------------------------------------

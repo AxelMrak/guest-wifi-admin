@@ -91,6 +91,44 @@ app.route("/api/status", createStatusRoutes(configService, routerService));
 app.route("/api/settings", createSettingsRoutes(configService));
 app.route("/api/guest", createGuestRoutes(configService, routerService));
 
+// Diagnóstico: lista servicios UBUS disponibles en el router
+app.get("/api/diagnostics", async (c) => {
+  try {
+    const services = await routerService.listAllServices();
+    const wifiKeys = Object.keys(services).filter(
+      (k) =>
+        k.includes("wifi") ||
+        k.includes("wireless") ||
+        k.includes("wlan") ||
+        k.includes("guest") ||
+        k.includes("radio") ||
+        k.includes("wificfg") ||
+        k.includes("network"),
+    );
+
+    // Inspeccionar métodos de cada servicio relacionado a WiFi
+    const details: Record<string, unknown> = {};
+    for (const name of wifiKeys) {
+      try {
+        details[name] = await routerService.describeService(name);
+      } catch (err) {
+        details[name] = { error: (err as Error).message };
+      }
+    }
+
+    return c.json({
+      ok: true,
+      data: {
+        totalServices: Object.keys(services).length,
+        wifiRelated: wifiKeys,
+        serviceDetails: details,
+      },
+    });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message }, 502);
+  }
+});
+
 // Frontend estático (solo producción)
 if (IS_PRODUCTION) {
   const DIST_DIR = path.join(ROOT_DIR, "dist");
@@ -114,6 +152,52 @@ const server = Bun.serve({
 });
 
 console.log(`✅ Backend escuchando en http://localhost:${server.port}`);
+
+// Diagnóstico de arranque: descubrir servicios UBUS antes del scheduler
+console.log("[diag] descubriendo servicios UBUS del router…");
+try {
+  const services = await routerService.listAllServices();
+  const wifiRelated = Object.keys(services).filter(
+    (k) =>
+      k.includes("wifi") ||
+      k.includes("wireless") ||
+      k.includes("wlan") ||
+      k.includes("guest") ||
+      k.includes("radio") ||
+      k.includes("wificfg") ||
+      k.includes("network"),
+  );
+  console.log(`[diag] ${Object.keys(services).length} servicios UBUS. WiFi/red: ${wifiRelated.join(", ") || "ninguno"}`);
+
+  // Inspeccionar métodos de cada servicio WiFi-related
+  for (const name of wifiRelated) {
+    try {
+      const methods = await routerService.describeService(name);
+      const methodNames = Object.keys(methods);
+      // Destacar métodos que suenan a control on/off
+      const controlMethods = methodNames.filter(
+        (m) =>
+          m.includes("enable") ||
+          m.includes("disable") ||
+          m.includes("status") ||
+          m.includes("set") ||
+          m.includes("get") ||
+          m.includes("up") ||
+          m.includes("down") ||
+          m.includes("on") ||
+          m.includes("off"),
+      );
+      console.log(`[diag]   ${name}: ${methodNames.join(", ")}`);
+      if (controlMethods.length > 0) {
+        console.log(`[diag]     → control potencial: ${controlMethods.join(", ")}`);
+      }
+    } catch (err) {
+      console.log(`[diag]   ${name}: ERROR — ${(err as Error).message}`);
+    }
+  }
+} catch (err) {
+  console.log(`[diag] falló descubrimiento UBUS: ${(err as Error).message}`);
+}
 
 await schedulerService.start();
 console.log("✅ Scheduler activo (evaluación inmediata + ciclo cada 60s)");
