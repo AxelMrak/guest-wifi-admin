@@ -280,9 +280,9 @@ export class RouterService {
 
   /**
    * Lista TODOS los servicios UBUS disponibles en el router (sin auth).
-   * Retorna el objeto completo con servicios → métodos → firmas.
+   * `ubus list` sin params devuelve array de nombres de servicio.
    */
-  async listAllServices(): Promise<Record<string, unknown>> {
+  async listAllServices(): Promise<string[]> {
     const body = {
       jsonrpc: "2.0",
       id: this.nextId(),
@@ -301,31 +301,51 @@ export class RouterService {
       throw new Error(`list: ${JSON.stringify(res.error).slice(0, 300)}`);
     }
 
-    // list devuelve result directamente como objeto, no array
-    const services = res.result as Record<string, unknown> | undefined;
-    if (!services || typeof services !== "object") {
-      throw new Error(`list: resultado inesperado: ${JSON.stringify(res).slice(0, 300)}`);
+    const raw = res.result;
+    if (Array.isArray(raw)) {
+      const count = raw.length;
+      const wifiRelated = raw.filter(
+        (n: string) =>
+          n.includes("wifi") ||
+          n.includes("wireless") ||
+          n.includes("wlan") ||
+          n.includes("guest") ||
+          n.includes("radio") ||
+          n.includes("wificfg") ||
+          n.includes("network") ||
+          n.includes("hotspot") ||
+          n.includes("rkey"),
+      );
+
+      this.log(`[list] ${count} servicios. WiFi/red/rkey: ${wifiRelated.join(", ")}`);
+      return raw as string[];
     }
 
-    const count = Object.keys(services).length;
-    const wifiRelated = Object.keys(services).filter(
-      (k) =>
-        k.includes("wifi") ||
-        k.includes("wireless") ||
-        k.includes("wlan") ||
-        k.includes("guest") ||
-        k.includes("radio") ||
-        k.includes("wificfg") ||
-        k.includes("network"),
-    );
+    const obj = raw as Record<string, unknown>;
+    if (obj && typeof obj === "object") {
+      const count = Object.keys(obj).length;
+      const wifiRelated = Object.keys(obj).filter(
+        (k) =>
+          k.includes("wifi") ||
+          k.includes("wireless") ||
+          k.includes("wlan") ||
+          k.includes("guest") ||
+          k.includes("radio") ||
+          k.includes("wificfg") ||
+          k.includes("network") ||
+          k.includes("hotspot") ||
+          k.includes("rkey"),
+      );
+      this.log(`[list] ${count} servicios (objeto). WiFi/red/rkey: ${wifiRelated.join(", ") || "ninguno"}`);
+      return Object.keys(obj);
+    }
 
-    this.log(`[list] ${count} servicios encontrados. Relacionados a WiFi: ${wifiRelated.join(", ") || "ninguno"}`);
-
-    return services;
+    throw new Error(`list: resultado inesperado: ${JSON.stringify(res).slice(0, 300)}`);
   }
 
   /**
-   * Describe los métodos y firmas de un servicio UBUS específico (sin auth).
+   * Describe los métodos y firmas de un servicio UBUS (sin auth).
+   * `ubus list [name]` devuelve { método: { params: ... } }.
    */
   async describeService(name: string): Promise<Record<string, unknown>> {
     const body = {
@@ -335,7 +355,6 @@ export class RouterService {
       params: [name],
     };
 
-    this.log(`[describe] inspeccionando servicio "${name}"…`);
     const res = await this.rawCall(body);
 
     if (!res || typeof res !== "object") {
@@ -351,7 +370,7 @@ export class RouterService {
       throw new Error(`describe ${name}: resultado inesperado`);
     }
 
-    this.log(`[describe] "${name}" → métodos: ${Object.keys(methods).join(", ")}`);
+    this.log(`[describe] "${name}" → ${Object.keys(methods).join(", ")}`);
     return methods;
   }
 

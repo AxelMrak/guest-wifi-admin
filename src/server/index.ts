@@ -94,21 +94,22 @@ app.route("/api/guest", createGuestRoutes(configService, routerService));
 // Diagnóstico: lista servicios UBUS disponibles en el router
 app.get("/api/diagnostics", async (c) => {
   try {
-    const services = await routerService.listAllServices();
-    const wifiKeys = Object.keys(services).filter(
-      (k) =>
-        k.includes("wifi") ||
-        k.includes("wireless") ||
-        k.includes("wlan") ||
-        k.includes("guest") ||
-        k.includes("radio") ||
-        k.includes("wificfg") ||
-        k.includes("network"),
+    const allNames = await routerService.listAllServices();
+    const wifiRelated = allNames.filter(
+      (n) =>
+        n.includes("wifi") ||
+        n.includes("wireless") ||
+        n.includes("wlan") ||
+        n.includes("guest") ||
+        n.includes("radio") ||
+        n.includes("wificfg") ||
+        n.includes("network") ||
+        n.includes("hotspot") ||
+        n.includes("rkey"),
     );
 
-    // Inspeccionar métodos de cada servicio relacionado a WiFi
     const details: Record<string, unknown> = {};
-    for (const name of wifiKeys) {
+    for (const name of wifiRelated) {
       try {
         details[name] = await routerService.describeService(name);
       } catch (err) {
@@ -118,11 +119,7 @@ app.get("/api/diagnostics", async (c) => {
 
     return c.json({
       ok: true,
-      data: {
-        totalServices: Object.keys(services).length,
-        wifiRelated: wifiKeys,
-        serviceDetails: details,
-      },
+      data: { totalServices: allNames.length, allServiceNames: allNames, wifiRelated, serviceDetails: details },
     });
   } catch (err) {
     return c.json({ ok: false, error: (err as Error).message }, 502);
@@ -156,25 +153,25 @@ console.log(`✅ Backend escuchando en http://localhost:${server.port}`);
 // Diagnóstico de arranque: descubrir servicios UBUS antes del scheduler
 console.log("[diag] descubriendo servicios UBUS del router…");
 try {
-  const services = await routerService.listAllServices();
-  const wifiRelated = Object.keys(services).filter(
-    (k) =>
-      k.includes("wifi") ||
-      k.includes("wireless") ||
-      k.includes("wlan") ||
-      k.includes("guest") ||
-      k.includes("radio") ||
-      k.includes("wificfg") ||
-      k.includes("network"),
+  const allNames = await routerService.listAllServices();
+  const wifiRelated = allNames.filter(
+    (n) =>
+      n.includes("wifi") ||
+      n.includes("wireless") ||
+      n.includes("wlan") ||
+      n.includes("guest") ||
+      n.includes("radio") ||
+      n.includes("wificfg") ||
+      n.includes("network") ||
+      n.includes("hotspot") ||
+      n.includes("rkey"),
   );
-  console.log(`[diag] ${Object.keys(services).length} servicios UBUS. WiFi/red: ${wifiRelated.join(", ") || "ninguno"}`);
+  console.log(`[diag] ${allNames.length} servicios. WiFi/red/rkey: ${wifiRelated.join(", ") || "ninguno"}`);
 
-  // Inspeccionar métodos de cada servicio WiFi-related
   for (const name of wifiRelated) {
     try {
       const methods = await routerService.describeService(name);
       const methodNames = Object.keys(methods);
-      // Destacar métodos que suenan a control on/off
       const controlMethods = methodNames.filter(
         (m) =>
           m.includes("enable") ||
@@ -189,7 +186,7 @@ try {
       );
       console.log(`[diag]   ${name}: ${methodNames.join(", ")}`);
       if (controlMethods.length > 0) {
-        console.log(`[diag]     → control potencial: ${controlMethods.join(", ")}`);
+        console.log(`[diag]     → potencial control: ${controlMethods.join(", ")}`);
       }
     } catch (err) {
       console.log(`[diag]   ${name}: ERROR — ${(err as Error).message}`);
