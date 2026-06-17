@@ -194,20 +194,58 @@ try {
   }
 
   // Exploración adicional: llamar directamente a métodos de routerd y rkey.*
-  console.log("[diag] exploración adicional — llamando a routerd.info y rkey.* …");
+  console.log("[diag] exploración adicional — routerd, rkey.*, network.* …");
+
+  // 1) Listar métodos de routerd (el servicio que SÍ responde)
+  try {
+    const routerdMethods = await routerService.describeService("routerd");
+    console.log(`[diag] routerd métodos: ${Object.keys(routerdMethods).join(", ")}`);
+  } catch (err) {
+    console.log(`[diag] describe routerd: ERROR — ${(err as Error).message}`);
+  }
+
+  // 2) Probar otros servicios
   const tryMethods: Array<{ service: string; method: string; payload?: Record<string, unknown> }> = [
     { service: "routerd", method: "info" },
-    { service: "rkey.routerd", method: "info" },
-    { service: "rkey.uci", method: "list" },
+    { service: "routerd", method: "wifi" },
+    { service: "routerd", method: "wificfg" },
+    { service: "routerd", method: "get_wifi" },
+    { service: "routerd", method: "get_wificfg" },
+    { service: "routerd", method: "wifi_status" },
+    { service: "routerd", method: "wifi_info" },
+    { service: "routerd", method: "wlan" },
+    { service: "routerd", method: "guest" },
+    { service: "routerd", method: "guest_wifi" },
+    { service: "routerd", method: "get_guest" },
+    { service: "routerd", method: "status" },
+    { service: "routerd", method: "wificfg_2g" },
+    { service: "routerd", method: "wificfg_5g" },
+    { service: "wifi", method: "info" },
+    { service: "wifi", method: "status" },
+    { service: "wifi", method: "wificfg" },
+    { service: "wifi", method: "get_wificfg" },
+    { service: "wifi", method: "get_apply_status" },
     { service: "network.wireless", method: "status" },
+    { service: "network.wireless", method: "info" },
+    { service: "network", method: "wificfg" },
+    { service: "network", method: "wifi" },
+    { service: "rkey.uci", method: "list" },
+    { service: "rkey.uci", method: "get" },
+    { service: "rkey.routerd", method: "info" },
+    { service: "rkey.routerd", method: "wificfg" },
+    { service: "rkey.routerd", method: "wifi" },
+    { service: "hotspot", method: "info" },
+    { service: "hotspot", method: "status" },
   ];
 
   for (const { service, method, payload } of tryMethods) {
     try {
       const res = await routerService.callService(service, method, payload);
-      console.log(`[diag] ${service}.${method}: ${JSON.stringify(res).slice(0, 500)}`);
+      const snippet = JSON.stringify(res).slice(0, 300);
+      console.log(`[diag] ${service}.${method}: ${snippet}`);
     } catch (err) {
-      console.log(`[diag] ${service}.${method}: ERROR — ${(err as Error).message}`);
+      const msg = (err as Error).message.slice(0, 100);
+      console.log(`[diag] ${service}.${method}: ERROR — ${msg}`);
     }
   }
 } catch (err) {
