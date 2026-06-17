@@ -282,6 +282,47 @@ try {
       }
     }
   }
+
+  // 4) Búsqueda del método apply (rkey.uci no tiene apply, hay que encontrar el correcto)
+  const applyTests: Array<{ service: string; method: string; payload: Record<string, unknown>; label: string }> = [
+    { service: "rkey.uci", method: "commit", payload: { config: "wificfg" }, label: "commit config=wificfg" },
+    { service: "rkey.uci", method: "commit", payload: {}, label: "commit sin args" },
+    { service: "rkey.uci", method: "apply", payload: { config: "wificfg" }, label: "apply con config" },
+    { service: "rkey.uci", method: "apply", payload: { config: "wificfg", section: "2G" }, label: "apply con section" },
+    { service: "rkey.uci", method: "apply", payload: {}, label: "apply sin args" },
+    { service: "wifi", method: "apply", payload: { config: "wificfg" }, label: "wifi.apply" },
+    { service: "wifi", method: "apply", payload: {}, label: "wifi.apply sin args" },
+    { service: "rkey", method: "apply", payload: { config: "wificfg" }, label: "rkey.apply" },
+    { service: "rkey", method: "wificfg_apply", payload: {}, label: "rkey.wificfg_apply" },
+    { service: "rkey", method: "wifi_apply", payload: {}, label: "rkey.wifi_apply" },
+  ];
+
+  console.log("[diag] probando métodos de apply…");
+  for (const { service, method, payload, label } of applyTests) {
+    try {
+      const res = await routerService.callService(service, method, payload);
+      const snippet = JSON.stringify(res).slice(0, 200);
+      console.log(`[diag]   ${service}.${method} (${label}): ${snippet}`);
+    } catch (err) {
+      const code = (err as Error).message.match(/"code":(-?\d+)/)?.[1] ?? "?";
+      if (code !== "3") {
+        console.log(`[diag]   ${service}.${method} (${label}): code=${code} — ${(err as Error).message.slice(0, 80)}`);
+      }
+    }
+  }
+
+  // 5) Set con apply=true (algunos UBUS aceptan apply embebido)
+  try {
+    const res = await routerService.callService("rkey.uci", "set", {
+      config: "wificfg",
+      section: "2G",
+      values: { Enable2: "1" },
+      apply: true,
+    });
+    console.log(`[diag]   rkey.uci.set con apply=true: ${JSON.stringify(res).slice(0, 200)}`);
+  } catch (err) {
+    console.log(`[diag]   rkey.uci.set con apply=true: ${(err as Error).message.slice(0, 150)}`);
+  }
 } catch (err) {
   console.log(`[diag] falló descubrimiento UBUS: ${(err as Error).message}`);
 }
