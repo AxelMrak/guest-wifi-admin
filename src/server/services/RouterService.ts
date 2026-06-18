@@ -442,55 +442,14 @@ export class RouterService {
    * Prueba varios métodos de UBUS (algunos routers exponen la API de forma distinta).
    */
   private async getAllWirelessSections(): Promise<Record<string, UciSectionValues> | null> {
-    // Método 1: rkey.uci.get (con los nuevos headers rompe el ACL en este router)
-    try {
-      const res = await this.ubusCallRaw({
-        service: "rkey.uci",
-        method: "get",
-        payload: { config: UCI_CONFIG },
-      });
-      const sections = this.extractSectionsFromResponse(res);
-      if (sections && Object.keys(sections).length > 0) return sections;
-    } catch (err) {
-      this.log(`[discover] rkey.uci.get falló: ${(err as Error).message}`);
-    }
-
-    // Método 2: uci get_all (fallback, normalmente bloqueado en este router)
-    try {
-      const res = await this.ubusCallRaw({
-        service: "uci",
-        method: "get_all",
-        payload: { config: UCI_CONFIG },
-      });
-      const sections = this.extractSectionsFromResponse(res);
-      if (sections && Object.keys(sections).length > 0) return sections;
-    } catch (err) {
-      this.log(`[discover] uci get_all falló: ${(err as Error).message}`);
-    }
-
-    // Método 3: iterar @wifi-iface[0..5] y juntar resultados
-    try {
-      const sections: Record<string, UciSectionValues> = {};
-      for (let i = 0; i < 8; i++) {
-        const name = `@wifi-iface[${i}]`;
-        try {
-          const res = await this.ubusCallRaw({
-            service: "uci",
-            method: "get",
-            payload: { config: UCI_CONFIG, section: name },
-          });
-          const values = this.extractSingleSection(res);
-          if (values) sections[name] = values;
-        } catch {
-          break; // asumimos que no hay más
-        }
-      }
-      if (Object.keys(sections).length > 0) return sections;
-    } catch (err) {
-      this.log(`[discover] iteración @wifi-iface falló: ${(err as Error).message}`);
-    }
-
-    return null;
+    // Único path que funciona en este router: rkey.uci.get.
+    // El router bloquea `uci.*` por ACL y `uci.get_all` devuelve [3].
+    const res = await this.ubusCallRaw({
+      service: "rkey.uci",
+      method: "get",
+      payload: { config: UCI_CONFIG },
+    });
+    return this.extractSectionsFromResponse(res);
   }
 
   /**
@@ -631,15 +590,17 @@ export class RouterService {
     const status = r.result[0];
     if (status !== 0) return null;
 
-    const data = r.result[1];
+    const wrapper = r.result[1];
+    if (!wrapper || typeof wrapper !== "object") return null;
+
+    // `rkey.uci.get({config})` envuelve en {values:{section:{...}}}
+    // `uci.get` estándar lo devuelve plano {section:{...}}
+    const data = (wrapper as Record<string, unknown>).values ?? wrapper;
     if (!data || typeof data !== "object") return null;
 
     const result: Record<string, UciSectionValues> = {};
-
-    // Caso: { "section_name": { ... }, "other_section": { ... } }
     for (const [key, val] of Object.entries(data as Record<string, unknown>)) {
       if (typeof val === "object" && val !== null && !Array.isArray(val)) {
-        // Verificar que sea una sección UCI (suele tener .type, .name, .anonymous)
         if (".type" in val || ".name" in val || ".anonymous" in val) {
           result[key] = val as UciSectionValues;
         }
@@ -649,23 +610,7 @@ export class RouterService {
     return result;
   }
 
-  /** Extrae UNA sección de una respuesta uci.get con section específica. */
-  private extractSingleSection(res: unknown): UciSectionValues | null {
-    if (!res || typeof res !== "object") return null;
 
-    const r = res as { result?: unknown; error?: unknown };
-    if (r.error !== undefined) return null;
-
-    if (!Array.isArray(r.result) || r.result.length < 2) return null;
-
-    const status = r.result[0];
-    if (status !== 0) return null;
-
-    const data = r.result[1];
-    if (!data || typeof data !== "object") return null;
-
-    return data as UciSectionValues;
-  }
 
   /**
    * Parseo de respuesta de una sección individual.
