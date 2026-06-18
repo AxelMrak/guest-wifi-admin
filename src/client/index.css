@@ -2,45 +2,60 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   Apple 2026 — Liquid Glass (dark)
+   SF-style: deep neutrals, frosted glass surfaces, fine 1px hairlines,
+   accent blue #0A84FF. Calibrated for SF Pro / -apple-system.
+   ============================================================================ */
+
 @layer base {
   :root {
-    /* Color principal: #002461 */
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    color-scheme: dark;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    /* Surfaces */
+    --background: 0 0% 4%;            /* #0a0a0c */
+    --foreground: 0 0% 98%;           /* #fafafa */
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
+    /* Layered glass: bg of cards */
+    --card: 0 0% 9%;                  /* #161618 */
+    --card-foreground: 0 0% 98%;
 
-    /* #002461 */
-    --primary: 221 100% 19%;
+    --popover: 0 0% 11%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Apple system blue */
+    --primary: 211 100% 50%;         /* #0A84FF */
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 210 40% 96%;
-    --secondary-foreground: 222 47% 11%;
+    /* Hairlines & fills */
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 98%;
 
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 64%;
 
-    --accent: 221 100% 19%;
+    --accent: 211 100% 50%;
     --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 84% 60%;
+    --destructive: 0 72% 51%;        /* #FF3B30 */
     --destructive-foreground: 0 0% 100%;
 
-    --success: 142 71% 45%;
-    --success-foreground: 0 0% 100%;
+    --success: 142 71% 45%;          /* #30D158 */
+    --success-foreground: 0 0% 0%;
 
-    --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 100%;
+    --warning: 35 100% 50%;          /* #FF9F0A */
+    --warning-foreground: 0 0% 0%;
 
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 221 100% 19%;
+    --border: 0 0% 18%;              /* hairline */
+    --input: 0 0% 18%;
+    --ring: 211 100% 50%;
 
-    --radius: 0.75rem;
+    --radius: 1rem;                  /* Apple 14-20r cards */
+
+    /* Liquid Glass tokens */
+    --glass-bg: hsla(0, 0%, 100%, 0.04);
+    --glass-border: hsla(0, 0%, 100%, 0.08);
+    --glass-highlight: hsla(0, 0%, 100%, 0.06);
   }
 
   * {
@@ -52,15 +67,82 @@
     @apply bg-background text-foreground;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+      "Inter", "Segoe UI", system-ui, sans-serif;
+    font-feature-settings: "ss01", "cv11", "ss03";
+    letter-spacing: -0.011em;
+  }
+
+  /* Subtle grain for atmosphere */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background-image:
+      radial-gradient(1200px 600px at 12% -10%, hsla(211, 100%, 50%, 0.10), transparent 60%),
+      radial-gradient(900px 500px at 110% 10%, hsla(280, 80%, 55%, 0.06), transparent 65%);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    letter-spacing: -0.022em;
+    font-weight: 600;
+  }
+}
+
+/* Liquid glass primitive — apply on any element */
+@layer components {
+  .glass {
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: saturate(180%) blur(40px);
+    backdrop-filter: saturate(180%) blur(40px);
+    border: 1px solid var(--glass-border);
+  }
+
+  .glass-strong {
+    background: linear-gradient(
+      180deg,
+      hsla(0, 0%, 100%, 0.06) 0%,
+      hsla(0, 0%, 100%, 0.03) 100%
+    );
+    -webkit-backdrop-filter: saturate(180%) blur(40px);
+    backdrop-filter: saturate(180%) blur(40px);
+    border: 1px solid var(--glass-border);
+  }
+
+  .hairline {
+    box-shadow: inset 0 1px 0 0 var(--glass-highlight);
+  }
+
+  .card-elevated {
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow:
+      0 0 0 1px var(--glass-highlight) inset,
+      0 30px 60px -30px rgba(0, 0, 0, 0.5);
+  }
+
+  /* Soft focus ring (Apple-style) */
+  .focus-apple:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: 0.5rem;
   }
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+
+  /* iOS-style track for switches handled by shadcn, but we can refine the surface */
+  .surface-fill {
+    background-color: hsl(var(--muted));
   }
 }

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Calendar, Save } from "lucide-react";
+import { Save } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -47,7 +47,6 @@ export function ScheduleCard() {
     },
   });
 
-  // Sincronizar form con settings cuando llegan del backend.
   useEffect(() => {
     if (settings) {
       reset({
@@ -81,8 +80,8 @@ export function ScheduleCard() {
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          Cargando configuración...
+        <CardContent className="py-12 text-center text-[13px] text-muted-foreground">
+          Cargando configuración…
         </CardContent>
       </Card>
     );
@@ -90,22 +89,22 @@ export function ScheduleCard() {
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <Calendar className="h-5 w-5 text-primary" />
-          Programación automática
-        </CardTitle>
+      <CardHeader className="pb-4">
+        <CardTitle>Programación</CardTitle>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-          {/* Switch principal */}
-          <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-4">
+          {/* Master toggle */}
+          <div className="flex items-center justify-between rounded-2xl border border-white/[0.06] bg-white/[0.03] p-4">
             <div className="space-y-0.5">
-              <Label htmlFor="scheduleEnabled" className="text-base">
-                Habilitar programación
+              <Label
+                htmlFor="scheduleEnabled"
+                className="text-[15px] font-medium text-foreground"
+              >
+                Activar programación
               </Label>
-              <p className="text-sm text-muted-foreground">
-                Activa y desactiva la red automáticamente según el horario.
+              <p className="text-[12.5px] text-muted-foreground leading-relaxed">
+                Encendido y apagado automático por horario.
               </p>
             </div>
             <Controller
@@ -121,57 +120,80 @@ export function ScheduleCard() {
             />
           </div>
 
-          {/* Horario + días */}
           <div
-            className={`space-y-5 transition-opacity ${
-              scheduleEnabled ? "opacity-100" : "pointer-events-none opacity-50"
+            className={`space-y-5 transition-all duration-300 ${
+              scheduleEnabled ? "opacity-100" : "pointer-events-none opacity-40"
             }`}
           >
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="startTime">Hora de inicio</Label>
+            {/* Times */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label
+                  htmlFor="startTime"
+                  className="text-[12.5px] font-medium uppercase tracking-wider text-muted-foreground"
+                >
+                  Desde
+                </Label>
                 <Controller
                   name="startTime"
                   control={control}
                   render={({ field }) => (
-                    <Input id="startTime" type="time" {...field} />
+                    <Input
+                      id="startTime"
+                      type="time"
+                      {...field}
+                      className="h-11 rounded-xl border-white/10 bg-white/[0.03] text-[15px] tabular-nums focus-apple"
+                    />
                   )}
                 />
                 {errors.startTime && (
-                  <p className="text-xs text-destructive">{errors.startTime.message}</p>
+                  <p className="text-[11.5px] text-destructive">{errors.startTime.message}</p>
                 )}
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="endTime">Hora de finalización</Label>
+              <div className="space-y-1.5">
+                <Label
+                  htmlFor="endTime"
+                  className="text-[12.5px] font-medium uppercase tracking-wider text-muted-foreground"
+                >
+                  Hasta
+                </Label>
                 <Controller
                   name="endTime"
                   control={control}
                   render={({ field }) => (
-                    <Input id="endTime" type="time" {...field} />
+                    <Input
+                      id="endTime"
+                      type="time"
+                      {...field}
+                      className="h-11 rounded-xl border-white/10 bg-white/[0.03] text-[15px] tabular-nums focus-apple"
+                    />
                   )}
                 />
                 {errors.endTime && (
-                  <p className="text-xs text-destructive">{errors.endTime.message}</p>
+                  <p className="text-[11.5px] text-destructive">{errors.endTime.message}</p>
                 )}
               </div>
             </div>
 
+            {/* Days */}
             <div className="space-y-2">
-              <Label>Días de la semana</Label>
+              <Label className="text-[12.5px] font-medium uppercase tracking-wider text-muted-foreground">
+                Días
+              </Label>
               <Controller
                 name="days"
                 control={control}
                 render={({ field }) => (
-                  <div className="grid grid-cols-7 gap-2">
+                  <div className="grid grid-cols-7 gap-1.5">
                     {WEEK_DAYS.map((day) => {
                       const checked = field.value.includes(day.value);
                       return (
                         <label
                           key={day.value}
-                          className={`flex flex-col items-center gap-1.5 rounded-md border p-2 cursor-pointer transition-colors hover:bg-accent/10 ${
+                          className={`flex flex-col items-center gap-1.5 rounded-xl border py-2.5 cursor-pointer transition-all active:scale-95 ${
                             checked
-                              ? "border-primary bg-primary/5"
-                              : "border-border bg-background"
+                              ? "border-primary/60 bg-primary/[0.12] text-foreground"
+                              : "border-white/[0.06] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05]"
                           }`}
                         >
                           <Checkbox
@@ -184,8 +206,11 @@ export function ScheduleCard() {
                               }
                             }}
                             aria-label={day.label}
+                            className="sr-only"
                           />
-                          <span className="text-xs font-medium">{day.short}</span>
+                          <span className="text-[13px] font-semibold tracking-tight">
+                            {day.short}
+                          </span>
                         </label>
                       );
                     })}
@@ -193,7 +218,7 @@ export function ScheduleCard() {
                 )}
               />
               {errors.days && (
-                <p className="text-xs text-destructive">{errors.days.message}</p>
+                <p className="text-[11.5px] text-destructive">{errors.days.message}</p>
               )}
             </div>
           </div>
@@ -201,15 +226,11 @@ export function ScheduleCard() {
           <Button
             type="submit"
             size="lg"
-            className="w-full"
             disabled={!isDirty || update.isPending}
+            className="h-12 w-full rounded-xl bg-primary text-[15px] font-medium text-primary-foreground shadow-[0_1px_0_0_rgba(255,255,255,0.16)_inset,0_8px_24px_-8px_hsl(211,100%,50%)] hover:bg-primary/90 disabled:opacity-40 disabled:shadow-none active:scale-[0.99] transition-all"
           >
-            {update.isPending ? (
-              <Save className="animate-pulse" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            Guardar configuración
+            <Save className="h-4 w-4" strokeWidth={2.25} />
+            Guardar
           </Button>
         </form>
       </CardContent>
