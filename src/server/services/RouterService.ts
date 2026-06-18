@@ -442,7 +442,20 @@ export class RouterService {
    * Prueba varios métodos de UBUS (algunos routers exponen la API de forma distinta).
    */
   private async getAllWirelessSections(): Promise<Record<string, UciSectionValues> | null> {
-    // Método 1: uci get_all (el más común en rpcd moderno)
+    // Método 1: rkey.uci.get (con los nuevos headers rompe el ACL en este router)
+    try {
+      const res = await this.ubusCallRaw({
+        service: "rkey.uci",
+        method: "get",
+        payload: { config: UCI_CONFIG },
+      });
+      const sections = this.extractSectionsFromResponse(res);
+      if (sections && Object.keys(sections).length > 0) return sections;
+    } catch (err) {
+      this.log(`[discover] rkey.uci.get falló: ${(err as Error).message}`);
+    }
+
+    // Método 2: uci get_all (fallback, normalmente bloqueado en este router)
     try {
       const res = await this.ubusCallRaw({
         service: "uci",
@@ -452,20 +465,7 @@ export class RouterService {
       const sections = this.extractSectionsFromResponse(res);
       if (sections && Object.keys(sections).length > 0) return sections;
     } catch (err) {
-      this.log(`[discover] get_all falló: ${(err as Error).message}`);
-    }
-
-    // Método 2: uci get sin sección (algunos routers devuelven todo el config)
-    try {
-      const res = await this.ubusCallRaw({
-        service: "uci",
-        method: "get",
-        payload: { config: UCI_CONFIG },
-      });
-      const sections = this.extractSectionsFromResponse(res);
-      if (sections && Object.keys(sections).length > 0) return sections;
-    } catch (err) {
-      this.log(`[discover] get (sin sección) falló: ${(err as Error).message}`);
+      this.log(`[discover] uci get_all falló: ${(err as Error).message}`);
     }
 
     // Método 3: iterar @wifi-iface[0..5] y juntar resultados
@@ -608,7 +608,7 @@ export class RouterService {
    */
   private async getSectionValues(sectionName: string): Promise<UciSectionValues> {
     const res = await this.callWithRetry({
-      service: "uci",
+      service: "rkey.uci",
       method: "get",
       payload: { config: UCI_CONFIG, section: sectionName },
     });
@@ -737,12 +737,13 @@ export class RouterService {
       this.log(`[setGuestState] cambiando ${section.band} (${section.uciName}).${section.enableKey}: ${currentValue} → ${targetValue}`);
 
       await this.callWithRetry({
-        service: "uci",
+        service: "rkey.uci",
         method: "set",
         payload: {
           config: UCI_CONFIG,
           section: section.uciName,
           values: { [section.enableKey]: targetValue },
+          apply: true,
         },
       });
       changed = true;
@@ -753,22 +754,19 @@ export class RouterService {
     }
   }
 
-  /** Ejecuta `uci apply` y espera a que los cambios se apliquen en el WiFi. */
+  /**
+   * Espera a que el subsistema WiFi procese los cambios UCI.
+   * El apply real se hace dentro del set con `apply: true` (la única vía que
+   * funciona en este firmware — `uci.apply` y `rkey.uci.apply` devuelven
+   * `[5]` y `[3]` respectivamente). Acá solo esperamos el estado.
+   */
   private async applyChanges(): Promise<void> {
-    this.log(`[apply] aplicando cambios en ${UCI_CONFIG}…`);
-    await this.callWithRetry({
-      service: "uci",
-      method: "apply",
-      payload: { timeout: 60 },
-    });
-
-    // Esperar a que el WiFi procese los cambios (el portal cautivo hace esto)
+    this.log(`[apply] esperando que WiFi aplique cambios en ${UCI_CONFIG}…`);
     try {
       await this.waitForWifiApply();
     } catch (err) {
       this.log(`[apply] wifi.get_apply_status falló (no crítico): ${(err as Error).message}`);
     }
-
     this.log(`[apply] cambios aplicados.`);
   }
 

@@ -332,7 +332,10 @@ try {
     console.log(`[diag]   rkey.uci.set con apply=true: ${(err as Error).message.slice(0, 150)}`);
   }
 
-  // 6) Test de toggle end-to-end (deshabilitar guest 2G+5G y verificar persistencia)
+  // 6) Test de toggle end-to-end (DESTRUCTIVO — solo si RUN_TEST_CYCLE=1)
+  if (process.env.RUN_TEST_CYCLE !== "1") {
+    console.log("[diag] (test end-to-end de toggle NO ejecutado — setear RUN_TEST_CYCLE=1 para correr)");
+  } else {
   console.log("[diag] ============================================================");
   console.log("[diag] TEST END-TO-END: deshabilitar guest WiFi 2G+5G");
   console.log("[diag] ============================================================");
@@ -399,6 +402,7 @@ try {
   console.log("[diag] >>> AHORA CHEQUEÁ TU LISTA DE WI-FI: 'Vertiente Clientes' y 'Vertiente Clientes-5G' deberían haber DESAPARECIDO.");
   console.log("[diag] >>> Si siguen visibles, el set persistió pero el radio no se re Cargó — el router necesita un reload explícito.");
   console.log("[diag] ============================================================");
+  }
 } catch (err) {
   console.log(`[diag] falló descubrimiento UBUS: ${(err as Error).message}`);
 }
