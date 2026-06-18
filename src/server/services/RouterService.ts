@@ -463,6 +463,21 @@ export class RouterService {
    *   - O si no hay candidatos claros, asume que las últimas wifi-iface son guest
    */
   private findGuestInterfaces(allSections: Record<string, UciSectionValues>): WirelessSection[] {
+    // Firmware custom (router ISP): secciones type=Radio con clave Enable2
+    // son las radios guest (2G/5G con main y guest coexistiendo).
+    const radioGuests = Object.entries(allSections)
+      .filter(([name, vals]) => {
+        if (vals[".type"] !== "Radio") return false;
+        if (!("Enable2" in vals)) return false;
+        return name !== "global";
+      })
+      .map(([name, vals]) => ({ name, vals }));
+
+    if (radioGuests.length >= 2) {
+      return this.buildSections(radioGuests.slice(0, 2));
+    }
+
+    // OpenWRT estándar: wifi-iface con network=guest o SSID patrón
     const ifaces = Object.entries(allSections)
       .filter(([, vals]) => vals[".type"] === "wifi-iface")
       .map(([name, vals]) => ({ name, vals }));
@@ -477,12 +492,10 @@ export class RouterService {
       return guestPattern.test(net) || guestPattern.test(ssid);
     });
 
-    // Si encontramos al menos 2 interfaces que matchean, las usamos
     if (guestIfaces.length >= 2) {
       return this.buildSections(guestIfaces.slice(0, 2));
     }
 
-    // Si encontramos 1, buscamos otra wifi-iface (la otra banda)
     if (guestIfaces.length === 1) {
       const other = ifaces.find((i) => i.name !== guestIfaces[0].name);
       if (other) {
@@ -490,7 +503,6 @@ export class RouterService {
       }
     }
 
-    // Si hay exactamente 2 wifi-iface, asumimos que son 2G y 5G guest
     if (ifaces.length === 2) {
       return this.buildSections(ifaces);
     }
@@ -521,10 +533,14 @@ export class RouterService {
     candidates: { name: string; vals: UciSectionValues }[],
   ): WirelessSection[] {
     return candidates.map(({ name, vals }, index) => {
-      // Intentar inferir la banda
       let band: WifiBand = index === 0 ? "2G" : "5G";
 
-      // Si la sección tiene device, podríamos inferir la banda
+      // Firmware custom: el nombre de la sección ES la banda ("2G", "5G")
+      if (name === "2G" || name === "5G") {
+        band = name;
+      }
+
+      // OpenWRT estándar: inferir desde device
       const device = vals.device;
       if (typeof device === "string") {
         const lower = device.toLowerCase();
@@ -535,7 +551,6 @@ export class RouterService {
         }
       }
 
-      // Detectar la clave de control
       const enableKey = this.detectEnableKey(vals);
 
       return {
