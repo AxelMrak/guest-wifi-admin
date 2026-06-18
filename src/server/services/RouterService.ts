@@ -579,14 +579,28 @@ export class RouterService {
 
   /**
    * Obtiene los valores de una sección específica del UCI.
+   * Tras un `uci.apply`, las secciones pueden devolver [9] NO_DATA brevemente
+   * mientras el radio se reconfigura. Reintenta hasta que la sección esté
+   * disponible de vuelta.
    */
   private async getSectionValues(sectionName: string): Promise<UciSectionValues> {
-    const res = await this.callWithRetry({
-      service: "rkey.uci",
-      method: "get",
-      payload: { config: UCI_CONFIG, section: sectionName },
-    });
-    return this.parseSingleSection(res, sectionName);
+    const maxAttempts = 6;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const res = await this.callWithRetry({
+        service: "rkey.uci",
+        method: "get",
+        payload: { config: UCI_CONFIG, section: sectionName },
+      });
+      try {
+        return this.parseSingleSection(res, sectionName);
+      } catch (err) {
+        const msg = (err as Error).message;
+        const isTransient = /código 9/.test(msg);
+        if (!isTransient || attempt === maxAttempts) throw err;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    throw new Error(`uci ${sectionName}: no se pudo leer tras reintentos`);
   }
 
   // ---------------------------------------------------------------------------
