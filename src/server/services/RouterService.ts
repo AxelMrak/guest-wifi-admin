@@ -696,14 +696,19 @@ export class RouterService {
 
       this.log(`[setGuestState] cambiando ${section.band} (${section.uciName}).${section.enableKey}: ${currentValue} → ${targetValue}`);
 
+      // El portal cautivo envía TODOS los campos guest (sufijo 2) en el set
+      // para que el router no rechace la actualización parcial. Copiamos los
+      // valores actuales y solo modificamos Enable2.
+      const values = this.collectGuestValues(currentValues);
+      values[section.enableKey] = targetValue;
+
       await this.callWithRetry({
-        service: "rkey.uci",
+        service: "uci",
         method: "set",
         payload: {
           config: UCI_CONFIG,
           section: section.uciName,
-          values: { [section.enableKey]: targetValue },
-          apply: true,
+          values,
         },
       });
       changed = true;
@@ -715,18 +720,43 @@ export class RouterService {
   }
 
   /**
-   * Espera a que el subsistema WiFi procese los cambios UCI.
-   * El apply real se hace dentro del set con `apply: true` (la única vía que
-   * funciona en este firmware — `uci.apply` y `rkey.uci.apply` devuelven
-   * `[5]` y `[3]` respectivamente). Acá solo esperamos el estado.
+   * Copia las claves guest (sufijo `2`) de los valores UCI actuales
+   * para enviarlas en el set. El portal cautivo incluye SSID2, AuthMode2,
+   * EncrypType2 y Passwd2 en cada set; sin esto el router puede rechazar
+   * el cambio parcial.
+   */
+  private collectGuestValues(currentValues: UciSectionValues): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [key, val] of Object.entries(currentValues)) {
+      if (key.startsWith(".") || !key.endsWith("2")) continue;
+      if (typeof val === "string") out[key] = val;
+    }
+    return out;
+  }
+
+  /**
+   * Aplica los cambios UCI al radio WiFi.
+   * `uci.apply {timeout:"60"}` (string) es lo que usa el portal cautivo.
+   * Después espera el estado de aplicación del WiFi.
    */
   private async applyChanges(): Promise<void> {
-    this.log(`[apply] esperando que WiFi aplique cambios en ${UCI_CONFIG}…`);
+    this.log(`[apply] aplicando cambios en ${UCI_CONFIG}…`);
+    try {
+      await this.callWithRetry({
+        service: "uci",
+        method: "apply",
+        payload: { timeout: "60" },
+      });
+    } catch (err) {
+      this.log(`[apply] uci.apply falló: ${(err as Error).message}`);
+    }
+
     try {
       await this.waitForWifiApply();
     } catch (err) {
       this.log(`[apply] wifi.get_apply_status falló (no crítico): ${(err as Error).message}`);
     }
+
     this.log(`[apply] cambios aplicados.`);
   }
 
